@@ -145,7 +145,7 @@ def _test_show_url(cluster, region, dcv_port, access_from, use_login_node=False)
     host_keys_file = operating_system.path.expanduser("~/.ssh/known_hosts")
     add_keys_to_known_hosts(node_ip, host_keys_file)
 
-    dcv_connect_args = ["pcluster", "dcv-connect", "--cluster-name", cluster.name, "--show-url"]
+    dcv_connect_args = ["pcluster", "dcv-connect", "--key-path", "/var/jenkins_home/.ssh/dec2023", "--cluster-name", cluster.name, "--show-url"]
 
     if use_login_node:
         dcv_connect_args.extend(["--login-node-ip", node_ip])
