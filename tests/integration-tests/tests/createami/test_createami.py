@@ -147,7 +147,7 @@ def test_build_image(
         update_os_packages = True
     image_config = pcluster_config_reader(
         config_file="image.config.yaml",
-        parent_image=base_ami,
+        parent_image="ami-0efb919718f5bb7eb",
         instance_role=instance_role,
         bucket_name=bucket_name,
         enable_nvidia=str(enable_nvidia and get_gpu_count(instance) > 0).lower(),
