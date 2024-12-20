@@ -12,7 +12,6 @@
 import logging
 import os
 from datetime import date
-from functools import lru_cache
 
 import yaml
 from jinja2 import FileSystemLoader
@@ -31,7 +30,7 @@ def _get_os_parameters(config=None, args=None):
     """
     available_amis_oss_x86 = _get_available_amis_oss("x86", config=config, args=args)
     available_amis_oss_arm = _get_available_amis_oss("arm", config=config, args=args)
-    result = {}
+    result = {"AVAILABLE_AMIS_OSS_X86": available_amis_oss_x86, "AVAILABLE_AMIS_OSS_ARM": available_amis_oss_arm}
     today_number = (date.today() - date(2020, 1, 1)).days
     for index in range(len(SUPPORTED_OSES)):
         result[f"OS_X86_{index}"] = available_amis_oss_x86[(today_number + index) % len(available_amis_oss_x86)]
@@ -115,7 +114,6 @@ def dump_rendered_config_file(config):
     return yaml.dump(config, default_flow_style=False)
 
 
-@lru_cache(maxsize=None)
 def _render_config_file(config_file, **kwargs):
     """
     Apply Jinja rendering to the specified config file.

@@ -334,7 +334,7 @@ test-suites:
       dimensions:
         - regions: ["use1-az1"]
           instances: ["c6in.32xlarge"]
-          oss: {{ common.OSS_COMMERCIAL_X86 }}
+          oss: {{ AVAILABLE_AMIS_OSS_X86 }}
           schedulers: ["slurm"]
   networking:
     test_cluster_networking.py::test_cluster_in_private_subnet:
