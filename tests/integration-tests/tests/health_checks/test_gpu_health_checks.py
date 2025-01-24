@@ -22,6 +22,7 @@ class NodeHealthStatus:
 @pytest.mark.usefixtures("instance", "os", "scheduler")
 def test_cluster_with_gpu_health_checks(
     region,
+    architecture,
     pcluster_config_reader,
     s3_bucket_factory,
     clusters_factory,
