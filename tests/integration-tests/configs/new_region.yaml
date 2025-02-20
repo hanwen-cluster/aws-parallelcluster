@@ -93,7 +93,7 @@ test-suites:
     test_efa.py::test_efa:
       dimensions:
         - regions: {{ NEW_REGION }}
-          instances: ["c5n.18xlarge"]
+          instances: ["c6in.12xlarge"]
           oss: ["alinux2"]
           schedulers: ["slurm"]
   iam:

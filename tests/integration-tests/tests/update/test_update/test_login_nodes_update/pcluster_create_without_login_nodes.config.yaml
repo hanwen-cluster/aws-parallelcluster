@@ -13,7 +13,7 @@ Scheduling:
       ComputeResources:
         - Name: queue1-i1
           Instances:
-            - InstanceType: c5.xlarge
+            - InstanceType: c6i.xlarge
           MinCount: 1
           MaxCount: 2
         - Name: queue1-i2

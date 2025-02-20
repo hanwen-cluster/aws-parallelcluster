@@ -46,14 +46,14 @@ Scheduling:
       ComputeResources:
         - Name: queue1-i1
           Instances:
-            - InstanceType: c5.large
-            - InstanceType: c5n.large
-            - InstanceType: c5d.large
+            - InstanceType: c6i.large
+            - InstanceType: c6in.large
+            - InstanceType: c6id.large
           MinCount: 2 # Increased parameter value
           MaxCount: 4 # Increased parameter value
         - Name: queue1-i2
           Instances:
-            - InstanceType: c5.2xlarge # Increased parameter value
+            - InstanceType: c6i.2xlarge # Increased parameter value
           SpotPrice: 2.1 # Increased parameter value
           # Removed MinCount
         - Name: queue1-i3 # New compute resource
@@ -96,7 +96,7 @@ Scheduling:
           Efa:
             Enabled: true
           Instances:
-            - InstanceType: c5n.18xlarge
+            - InstanceType: c6in.12xlarge
           MaxCount: 1 # New parameter
           DisableSimultaneousMultithreading: true # New parameter
       Networking:
@@ -127,7 +127,7 @@ Scheduling:
       ComputeResources:
         - Name: queue3-i1
           Instances:
-            - InstanceType: c5n.18xlarge
+            - InstanceType: c6in.12xlarge
           DisableSimultaneousMultithreading: true
           Efa:
             Enabled: true

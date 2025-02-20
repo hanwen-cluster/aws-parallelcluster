@@ -28,7 +28,7 @@ Scheduling:
       ComputeResources:
         - Name: compute-resource-11
           Instances:
-            - InstanceType: c5.large
+            - InstanceType: c6i.large
         - Name: compute-resource-12
           Instances:
             - InstanceType: {{ instance }}
@@ -40,7 +40,7 @@ Scheduling:
       ComputeResources:
         - Name: compute-resource-21
           Instances:
-            - InstanceType: c5.large
+            - InstanceType: c6i.large
         - Name: compute-resource-22
           Instances:
             - InstanceType: {{ instance }}

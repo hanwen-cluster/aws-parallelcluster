@@ -261,7 +261,7 @@ test-suites:
     test_efa.py::test_efa:
       dimensions:
         - regions: ["euw1-az1"]  # do not move, unless capacity reservation is moved as well
-          instances: ["c5n.18xlarge"]
+          instances: ["c6in.12xlarge"]
           oss: [{{ OS_X86_0 }}]
           schedulers: ["slurm"]
         - regions: ["use1-az6"]   # do not move, unless capacity reservation is moved as well

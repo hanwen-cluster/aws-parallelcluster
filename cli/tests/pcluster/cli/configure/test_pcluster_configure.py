@@ -301,7 +301,7 @@ def _mock_aws_api_required_calls(mocker):
         "g3.8xlarge",
         "m6g.xlarge",
         "p4d.24xlarge",
-        "c5n.18xlarge",
+        "c6in.12xlarge",
     ]
     mock_aws_api(mocker, mock_instance_type_info=False)
     mocker.patch("pcluster.aws.ec2.Ec2Client.get_default_instance_type", return_value="t3.micro")
@@ -739,7 +739,7 @@ def test_efa_placement_group(
 
     input_composer = ComposeInput(aws_region_name="eu-west-1", key="key1", scheduler="slurm")
     input_composer.add_first_flow(op_sys="alinux2", head_node_instance="t3.nano")
-    input_composer.add_compute_instance("c5n.18xlarge", supports_efa=supports_efa, efa_enabled=efa_enabled)
+    input_composer.add_compute_instance("c6in.12xlarge", supports_efa=supports_efa, efa_enabled=efa_enabled)
 
     for name in placement_group_names:
         input_composer.add_placement_group(name)

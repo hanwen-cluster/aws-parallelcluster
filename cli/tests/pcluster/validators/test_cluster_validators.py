@@ -691,24 +691,24 @@ def test_schedulable_memory_validator(schedulable_memory, ec2memory, instance_ty
     "instance_type, efa_enabled, gdr_support, efa_supported, multiaz_enabled, expected_message",
     [
         # EFAGDR without EFA
-        ("c5n.18xlarge", False, True, True, False, "GDR Support can be used only if EFA is enabled"),
+        ("c6in.12xlarge", False, True, True, False, "GDR Support can be used only if EFA is enabled"),
         # EFAGDR with EFA
-        ("c5n.18xlarge", True, True, True, False, None),
+        ("c6in.12xlarge", True, True, True, False, None),
         # EFA without EFAGDR
-        ("c5n.18xlarge", True, False, True, False, None),
+        ("c6in.12xlarge", True, False, True, False, None),
         # Unsupported instance type
         ("t3.large", True, False, False, False, "does not support EFA"),
         ("t3.large", False, False, False, False, None),
         # EFA not enabled for instance type that supports it
         (
-            "c5n.18xlarge",
+            "c6in.12xlarge",
             False,
             False,
             True,
             False,
             "supports enhanced networking capabilities using Elastic Fabric Adapter",
         ),
-        ("c5n.18xlarge", False, False, True, True, None),
+        ("c6in.12xlarge", False, False, True, True, None),
     ],
 )
 def test_efa_validator(
@@ -722,7 +722,7 @@ def test_efa_validator(
                 "InstanceType": instance_type,
                 "VCpuInfo": {"DefaultVCpus": 4, "DefaultCores": 2},
                 "NetworkInfo": {
-                    "EfaSupported": instance_type == "c5n.18xlarge",
+                    "EfaSupported": instance_type == "c6in.12xlarge",
                     "NetworkCards": [{"NetworkCardIndex": 0}],
                 },
             }

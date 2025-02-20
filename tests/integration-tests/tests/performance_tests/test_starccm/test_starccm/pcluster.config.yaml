@@ -27,7 +27,7 @@ Scheduling:
   SlurmQueues:
     - Name: q1
       ComputeResources:
-        - Name: c5n-18xl-efa
+        - Name: c6in.12xl-efa
           InstanceType: {{ instance }}
           MinCount: {{ number_of_nodes }}
           MaxCount: {{ number_of_nodes }}
@@ -39,7 +39,7 @@ Scheduling:
           - {{ private_subnet_id }}
         PlacementGroup:
           Enabled: true
-          {% if instance == "c5n.18xlarge" %}Name: c5n_capacity_reservation{% endif %}
+          {% if instance == "c6in.12xlarge" %}Name: c5n_capacity_reservation{% endif %}
       Iam:
         AdditionalIamPolicies:
           - Policy: arn:{{partition}}:iam::aws:policy/AmazonSSMManagedInstanceCore #Required to report patching status

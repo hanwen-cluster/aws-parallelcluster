@@ -1138,7 +1138,7 @@ def s3_bucket_key_prefix():
 @pytest.fixture(scope="class")
 def serial_execution_by_instance(request, instance):
     """Enforce serial execution of tests, according to the adopted instance."""
-    if instance in ["c5n.18xlarge", "p4d.24xlarge"]:
+    if instance in ["c6in.12xlarge", "p4d.24xlarge"]:
         logging.info("Enforcing serial execution for instance %s", instance)
         outdir = request.config.getoption("output_dir")
         lock_file = f"{outdir}/{instance}.lock"

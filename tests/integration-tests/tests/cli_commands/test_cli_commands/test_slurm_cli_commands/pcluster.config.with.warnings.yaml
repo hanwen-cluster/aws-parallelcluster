@@ -24,7 +24,7 @@ Scheduling:
           - {{ private_subnet_id }}
       ComputeResources:
         - Name: invalid_underscore_name  # Name with underscore will generate an error
-          InstanceType: c5.large
+          InstanceType: c6i.large
         - Name: compute-resource-12
           InstanceType: {{ instance }}
           MinCount: 1
@@ -34,7 +34,7 @@ Scheduling:
           - {{ private_subnet_id }}
       ComputeResources:
         - Name: compute-resource-21
-          InstanceType: c5.large
+          InstanceType: c6i.large
         - Name: compute-resource-22
           InstanceType: {{ instance }}
           MinCount: 1
