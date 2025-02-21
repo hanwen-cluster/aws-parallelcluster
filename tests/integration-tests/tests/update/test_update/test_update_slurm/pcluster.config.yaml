@@ -111,6 +111,8 @@ SharedStorage:
     StorageType: FsxLustre
     FsxLustreSettings:
       StorageCapacity: 2400
+      DeploymentType: PERSISTENT_2
+      PerUnitStorageThroughput: 125
 #     WeeklyMaintenanceStartTime: "3:02:30" #Initially not set
 {% endif %}
 Monitoring:
