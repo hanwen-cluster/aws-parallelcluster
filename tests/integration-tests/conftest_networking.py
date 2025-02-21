@@ -40,7 +40,7 @@ AVAILABLE_AVAILABILITY_ZONE = {
     "ap-northeast-1": ["apne1-az4", "apne1-az2"],
     # c5.xlarge is not supported in apse1-az3
     "ap-southeast-1": ["apse1-az2", "apse1-az1"],
-    # NAT Gateway not available in sae1-az2 , c6in.12xlarge is not supported in sae1-az3
+    # NAT Gateway not available in sae1-az2 , c6in.32xlarge is not supported in sae1-az3
     "sa-east-1": ["sae1-az1"],
     # m6g.xlarge instances not available in euw1-az3
     "eu-west-1": ["euw1-az1", "euw1-az2"],

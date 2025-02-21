@@ -371,7 +371,7 @@ class TestBaseClusterConfig:
                                 [FlexibleInstanceType(instance_type="c5.xlarge")], name="compute_resource_2"
                             ),
                             SlurmFlexibleComputeResource(
-                                [FlexibleInstanceType(instance_type="c6in.12xlarge")], name="compute_resource_3"
+                                [FlexibleInstanceType(instance_type="c6in.32xlarge")], name="compute_resource_3"
                             ),
                         ],
                     )
@@ -403,7 +403,7 @@ class TestBaseClusterConfig:
                     instances=[
                         FlexibleInstanceType(instance_type="c5n.4xlarge"),
                         FlexibleInstanceType(instance_type="c5n.9xlarge"),
-                        FlexibleInstanceType(instance_type="c6in.12xlarge"),
+                        FlexibleInstanceType(instance_type="c6in.32xlarge"),
                     ],
                 ),
                 SlurmFlexibleComputeResource(
@@ -415,7 +415,7 @@ class TestBaseClusterConfig:
             ],
         )
 
-        expected_instance_type_list = ["c5n.4xlarge", "t3.micro", "c5n.9xlarge", "c6in.12xlarge"]
+        expected_instance_type_list = ["c5n.4xlarge", "t3.micro", "c5n.9xlarge", "c6in.32xlarge"]
         assert_that(queue.instance_type_list).is_length(len(expected_instance_type_list))
         assert_that(set(queue.instance_type_list) - set(expected_instance_type_list)).is_length(0)
 
@@ -846,7 +846,7 @@ class TestBaseClusterConfig:
                                 [FlexibleInstanceType(instance_type="c5.xlarge")], name="compute_resource_2"
                             ),
                             SlurmFlexibleComputeResource(
-                                [FlexibleInstanceType(instance_type="c6in.12xlarge")], name="compute_resource_3"
+                                [FlexibleInstanceType(instance_type="c6in.32xlarge")], name="compute_resource_3"
                             ),
                         ],
                     )

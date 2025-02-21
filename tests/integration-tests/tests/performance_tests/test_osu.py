@@ -21,8 +21,8 @@ from tests.common.assertions import assert_no_errors_in_logs
 from tests.common.osu_common import run_individual_osu_benchmark
 from tests.common.utils import fetch_instance_slots, get_installed_parallelcluster_version, run_system_analyzer
 
-# We collected OSU benchmarks results for c6in.12xlarge only.
-OSU_BENCHMARKS_INSTANCES = ["c6in.12xlarge"]
+# We collected OSU benchmarks results for c6in.32xlarge only.
+OSU_BENCHMARKS_INSTANCES = ["c6in.32xlarge"]
 
 
 @pytest.mark.usefixtures("serial_execution_by_instance")

@@ -14,7 +14,7 @@ Scheduling:
       ComputeResources:
         - Name: c5n18xlarge
           Instances:
-            - InstanceType: c6in.12xlarge
+            - InstanceType: c6in.32xlarge
           MinCount: 0
           MaxCount: 10
           Efa:

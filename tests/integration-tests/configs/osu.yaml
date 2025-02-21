@@ -4,6 +4,6 @@ test-suites:
     test_osu.py::test_osu:
       dimensions:
         - regions: [ "euw1-az1" ]  # do not move, unless capacity reservation is moved as well
-          instances: [ "c6in.12xlarge" ]
+          instances: [ "c6in.32xlarge" ]
           oss: {{ common.OSS_COMMERCIAL_X86 }}
           schedulers: [ "slurm" ]

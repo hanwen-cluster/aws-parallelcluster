@@ -343,7 +343,7 @@ def test_instances_accelerators_validator(compute_resource_name, instance_types_
                 "t3.micro": InstanceTypeInfo(
                     {"NetworkInfo": {"EfaSupported": False, "NetworkCards": [{"NetworkCardIndex": 0}]}}
                 ),
-                "c6in.12xlarge": InstanceTypeInfo(
+                "c6in.32xlarge": InstanceTypeInfo(
                     {"NetworkInfo": {"EfaSupported": True, "NetworkCards": [{"NetworkCardIndex": 0}]}}
                 ),
             },
@@ -358,7 +358,7 @@ def test_instances_accelerators_validator(compute_resource_name, instance_types_
                 "c5n.9xlarge": InstanceTypeInfo(
                     {"NetworkInfo": {"EfaSupported": True, "NetworkCards": [{"NetworkCardIndex": 0}]}}
                 ),
-                "c6in.12xlarge": InstanceTypeInfo(
+                "c6in.32xlarge": InstanceTypeInfo(
                     {"NetworkInfo": {"EfaSupported": True, "NetworkCards": [{"NetworkCardIndex": 0}]}}
                 ),
             },
@@ -376,13 +376,13 @@ def test_instances_accelerators_validator(compute_resource_name, instance_types_
                 "t3.micro": InstanceTypeInfo(
                     {"NetworkInfo": {"EfaSupported": False, "NetworkCards": [{"NetworkCardIndex": 0}]}}
                 ),
-                "c6in.12xlarge": InstanceTypeInfo(
+                "c6in.32xlarge": InstanceTypeInfo(
                     {"NetworkInfo": {"EfaSupported": True, "NetworkCards": [{"NetworkCardIndex": 0}]}}
                 ),
             },
             False,
             False,
-            "The EC2 instance type(s) selected (c6in.12xlarge) for the Compute Resource TestComputeResource support "
+            "The EC2 instance type(s) selected (c6in.32xlarge) for the Compute Resource TestComputeResource support "
             "enhanced networking capabilities using Elastic Fabric Adapter (EFA). EFA enables you to run applications "
             "requiring high levels of inter-node communications at scale on AWS at no additional charge. You can "
             "update the cluster's configuration to enable EFA ("
@@ -399,7 +399,7 @@ def test_instances_accelerators_validator(compute_resource_name, instance_types_
                 "t3.micro": InstanceTypeInfo(
                     {"NetworkInfo": {"EfaSupported": False, "NetworkCards": [{"NetworkCardIndex": 0}]}}
                 ),
-                "c6in.12xlarge": InstanceTypeInfo(
+                "c6in.32xlarge": InstanceTypeInfo(
                     {"NetworkInfo": {"EfaSupported": True, "NetworkCards": [{"NetworkCardIndex": 0}]}}
                 ),
             },

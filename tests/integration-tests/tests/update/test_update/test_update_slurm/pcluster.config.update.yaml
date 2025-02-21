@@ -96,7 +96,7 @@ Scheduling:
           Efa:
             Enabled: true
           Instances:
-            - InstanceType: c6in.12xlarge
+            - InstanceType: c6in.32xlarge
           MaxCount: 1 # New parameter
           DisableSimultaneousMultithreading: true # New parameter
       Networking:
@@ -127,7 +127,7 @@ Scheduling:
       ComputeResources:
         - Name: queue3-i1
           Instances:
-            - InstanceType: c6in.12xlarge
+            - InstanceType: c6in.32xlarge
           DisableSimultaneousMultithreading: true
           Efa:
             Enabled: true

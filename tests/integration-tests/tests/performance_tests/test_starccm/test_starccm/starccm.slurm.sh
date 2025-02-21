@@ -1,6 +1,6 @@
 #!/bin/bash
 # ntasks = Nodes * (vCPUs / 2); vCPUs are cut in a half because multithreading is disabled
-#          Example: using compute nodes c6in.12xlarge with 72 vCPUS, if we want to use only one node we must set this value to 36.
+#          Example: using compute nodes c6in.32xlarge with 72 vCPUS, if we want to use only one node we must set this value to 36.
 # The command /shared/STAR-CCM+/16.02.008/STAR-CCM+16.02.008/star/bin/starccm+ should be from an installation made for the user that will run the simulation
 
 #SBATCH --job-name=starccm

@@ -31,7 +31,7 @@ Scheduling:
           {% else %}
           Instances:
             - InstanceType: c5.18xlarge
-            - InstanceType: c6in.12xlarge
+            - InstanceType: c6in.32xlarge
             - InstanceType: c5n.metal
           {% endif %}
           MinCount: 2

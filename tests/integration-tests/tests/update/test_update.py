@@ -156,7 +156,7 @@ def test_update_slurm(region, pcluster_config_reader, s3_bucket_factory, cluster
                 "queue2-i1": {
                     "instances": [
                         {
-                            "instance_type": "c6in.12xlarge",
+                            "instance_type": "c6in.32xlarge",
                         }
                     ],
                     "expected_running_instances": 0,
@@ -265,7 +265,7 @@ def test_update_slurm(region, pcluster_config_reader, s3_bucket_factory, cluster
                 "queue2-i1": {
                     "instances": [
                         {
-                            "instance_type": "c6in.12xlarge",
+                            "instance_type": "c6in.32xlarge",
                         }
                     ],
                     "expected_running_instances": 0,
@@ -282,7 +282,7 @@ def test_update_slurm(region, pcluster_config_reader, s3_bucket_factory, cluster
                 "queue3-i1": {
                     "instances": [
                         {
-                            "instance_type": "c6in.12xlarge",
+                            "instance_type": "c6in.32xlarge",
                         }
                     ],
                     "expected_running_instances": 0,
