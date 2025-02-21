@@ -45,7 +45,7 @@ def test_efa(
     Grouped all tests in a single function so that cluster can be reused for all of them.
     """
     if architecture == "x86_64":
-        head_node_instance = "c5.18xlarge"
+        head_node_instance = "c6i.18xlarge"
     else:
         head_node_instance = "c6g.16xlarge"
 
