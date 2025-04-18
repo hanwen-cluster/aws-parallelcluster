@@ -291,6 +291,7 @@ def _get_resource_name_from_resource_arn(resource_arn):
 @pytest.mark.usefixtures("os", "instance")
 def test_iam_policies(region, scheduler, pcluster_config_reader, clusters_factory):
     """Test IAM Policies"""
+    assert_that(100).is_equal_to(400)
     cluster_config = pcluster_config_reader(
         iam_policies=[f"arn:{get_arn_partition(region)}:iam::aws:policy/AmazonS3ReadOnlyAccess"]
     )
