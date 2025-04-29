@@ -15,6 +15,7 @@ import os
 import time
 from typing import List
 
+import boto3
 import untangle
 from framework.metrics_publisher import Metric, MetricsPublisher
 from junitparser import JUnitXml
@@ -143,3 +144,44 @@ def _put_metrics(
             [Metric(item["name"], item["value"], item["unit"], dimensions, timestamp)],
         )
         time.sleep(put_metric_sleep_interval)
+
+def generate_scaling_data_report():
+    dynamodb_client = boto3.client("dynamodb", region_name="us-east-1")
+    current_time = int(time.time())
+    one_month_ago = current_time - (30 * 24 * 60 * 60)
+
+    filter_expression = "#call_start_time >= :one_month_ago"
+    expression_attribute_names = {"#call_start_time": "call_start_time"}
+    expression_attribute_values = {":one_month_ago": {"N": str(one_month_ago)}}
+    all_items = []
+    last_evaluated_key = None
+    while True:
+        # Parameters for the scan operation
+        scan_params = {
+            "TableName": "ParallelCluster-IntegTest-Metadata",
+            "AttributesToGet": [
+                "call_status",
+                "compute_average_launch_time",
+                "compute_max_launch_time",
+                "compute_min_launch_time",
+                "cluster_creation_time",
+                "name",
+                "os",
+                "call_start_time"
+            ],
+            "FilterExpression": filter_expression,
+            "ExpressionAttributeNames": expression_attribute_names,
+            "ExpressionAttributeValues": expression_attribute_values
+        }
+
+        # Add ExclusiveStartKey if we're not on the first iteration
+        if last_evaluated_key:
+            scan_params["ExclusiveStartKey"] = last_evaluated_key
+
+        response = dynamodb_client.scan(**scan_params)
+        all_items.extend(response.get("Items", []))
+
+        # Check if there are more items to fetch
+        last_evaluated_key = response.get("LastEvaluatedKey")
+        if not last_evaluated_key:
+            break
