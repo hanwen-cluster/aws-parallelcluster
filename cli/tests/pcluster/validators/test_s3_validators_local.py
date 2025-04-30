@@ -13,14 +13,16 @@ from tests.pcluster.validators.utils import assert_failure_messages
 def test_url_validator():
     dynamodb_client = boto3.client("dynamodb", region_name="us-east-1")
     current_time = int(time.time())
-    one_month_ago = current_time - (30 * 24 * 60 * 60)
+    one_month_ago = current_time - (0.5 * 24 * 60 * 60)
 
     filter_expression = "#call_start_time >= :one_month_ago"
     expression_attribute_values = {":one_month_ago": {"N": str(one_month_ago)}}
     all_items = []
     last_evaluated_key = None
     while True:
-        projection_expression = "#status, #avg_launch, #max_launch, #min_launch, #creation_time, #name, #os, #start_time"
+        projection_expression = (
+            "#status, #avg_launch, #max_launch, #min_launch, #creation_time, #name, #os, #start_time"
+        )
         expression_attribute_names = {
             "#call_start_time": "call_start_time",
             "#status": "call_status",
@@ -30,7 +32,7 @@ def test_url_validator():
             "#creation_time": "cluster_creation_time",
             "#name": "name",
             "#os": "os",
-            "#start_time": "call_start_time"
+            "#start_time": "call_start_time",
         }
         # Parameters for the scan operation
         scan_params = {
@@ -38,7 +40,7 @@ def test_url_validator():
             "ProjectionExpression": projection_expression,
             "FilterExpression": filter_expression,
             "ExpressionAttributeNames": expression_attribute_names,
-            "ExpressionAttributeValues": expression_attribute_values
+            "ExpressionAttributeValues": expression_attribute_values,
         }
 
         # Add ExclusiveStartKey if we're not on the first iteration
@@ -58,16 +60,41 @@ def test_url_validator():
         category_name_processing = None
         if category_name == "name":
             category_name_processing = _remove_os_from_string
-        for statistics_name in ["cluster_creation_time", "compute_average_launch_time", "compute_min_launch_time", "compute_max_launch_time"]:
-            result[statistics_name][category_name] = _get_statistics_by_category(all_items, category_name, statistics_name, category_name_processing)
+        for statistics_name in [
+            "cluster_creation_time",
+            "compute_average_launch_time",
+            "compute_min_launch_time",
+            "compute_max_launch_time",
+        ]:
+            if statistics_name in ["cluster_creation_time", "compute_average_launch_time"]:
+                statistics_processing = _mean
+            elif statistics_name in ["compute_max_launch_time"]:
+                statistics_processing = max
+            else:
+                statistics_processing = min
+            result[statistics_name][category_name] = _get_statistics_by_category(
+                all_items,
+                category_name,
+                statistics_name,
+                category_name_processing=category_name_processing,
+                statistics_processing=statistics_processing,
+            )
     print(all_items)
+
+
+def _mean(x):
+    return sum(x) / len(x)
+
 
 def _remove_os_from_string(x):
     for os in SUPPORTED_OSES:
         x = x.replace(os, "")
     return x
 
-def _get_statistics_by_category(all_items, category_name, statistics_name, category_name_processing = None):
+
+def _get_statistics_by_category(
+    all_items, category_name, statistics_name, category_name_processing=None, statistics_processing=None
+):
     os_cluster_creation_times = {}
     for item in all_items:
         if item["call_status"]["S"] != "passed":

@@ -145,6 +145,7 @@ def _put_metrics(
         )
         time.sleep(put_metric_sleep_interval)
 
+
 def generate_scaling_data_report():
     dynamodb_client = boto3.client("dynamodb", region_name="us-east-1")
     current_time = int(time.time())
@@ -167,11 +168,11 @@ def generate_scaling_data_report():
                 "cluster_creation_time",
                 "name",
                 "os",
-                "call_start_time"
+                "call_start_time",
             ],
             "FilterExpression": filter_expression,
             "ExpressionAttributeNames": expression_attribute_names,
-            "ExpressionAttributeValues": expression_attribute_values
+            "ExpressionAttributeValues": expression_attribute_values,
         }
 
         # Add ExclusiveStartKey if we're not on the first iteration
