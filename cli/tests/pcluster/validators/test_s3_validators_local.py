@@ -8,12 +8,13 @@ from cli.build.lib.pcluster.constants import SUPPORTED_OSES
 from pcluster.aws.common import AWSClientError
 from pcluster.validators.s3_validators import S3BucketRegionValidator, S3BucketUriValidator, UrlValidator
 from tests.pcluster.validators.utils import assert_failure_messages
+import datetime
 
 
 def test_url_validator():
     dynamodb_client = boto3.client("dynamodb", region_name="us-east-1")
     current_time = int(time.time())
-    one_month_ago = current_time - (0.5 * 24 * 60 * 60)
+    one_month_ago = current_time - (300 * 24 * 60 * 60)
 
     filter_expression = "#call_start_time >= :one_month_ago"
     expression_attribute_values = {":one_month_ago": {"N": str(one_month_ago)}}
@@ -95,28 +96,74 @@ def _remove_os_from_string(x):
 def _get_statistics_by_category(
     all_items, category_name, statistics_name, category_name_processing=None, statistics_processing=None
 ):
-    os_cluster_creation_times = {}
-    for item in all_items:
-        if item["call_status"]["S"] != "passed":
-            continue
-        if statistics_name not in item:
-            continue
-        cluster_creation_time = item[statistics_name]["N"]
-        if cluster_creation_time == "0":
-            continue
-        os = item[category_name]["S"]
-        if category_name_processing:
-            os = category_name_processing(os)
-        if os not in os_cluster_creation_times:
-            os_cluster_creation_times[os] = [float(cluster_creation_time)]
-        else:
-            os_cluster_creation_times[os].append(float(cluster_creation_time))
+    more_data = True
+    lastest_time = float(all_items[0]["call_start_time"]["N"])
+    window_length = 8
     result = {}
-    for os, cluster_creation_times in os_cluster_creation_times.items():
-        cluster_creation_times.sort(reverse=True)
-        result[os] = sum(cluster_creation_times) / len(cluster_creation_times)
-    return sorted(result.items(), key=lambda x: x[1], reverse=True)
+    while more_data:
+        more_data = False
+        os_cluster_creation_times = {}
+        for item in all_items:
+            if item["call_status"]["S"] != "passed":
+                continue
+            if statistics_name not in item:
+                continue
+            if float(item["call_start_time"]["N"]) < lastest_time - (window_length * 24 * 60 * 60):
+                more_data = True
+                continue
+            if float(item["call_start_time"]["N"]) > lastest_time:
+                continue
+            cluster_creation_time = item[statistics_name]["N"]
+            if cluster_creation_time == "0":
+                continue
+            os = item[category_name]["S"]
+            if category_name_processing:
+                os = category_name_processing(os)
+            if os not in os_cluster_creation_times:
+                os_cluster_creation_times[os] = [float(cluster_creation_time)]
+            else:
+                os_cluster_creation_times[os].append(float(cluster_creation_time))
+        for os, cluster_creation_times in os_cluster_creation_times.items():
+            if os not in result:
+                result[os] = []
+            os_time_key = f"{os}-time"
+            if os_time_key not in result:
+                result[os_time_key] = []
+            result[os].insert(0, sum(cluster_creation_times) / len(cluster_creation_times))
+            result[os_time_key].insert(0, datetime.datetime.fromtimestamp(lastest_time).strftime("%Y-%m-%d"))
+        if os_cluster_creation_times:
+            more_data = True
+        lastest_time = lastest_time - 24 * 60 * 60
+        print(lastest_time)
 
+    plot_statistics(result, statistics_name)
+    return result
+    # return sorted(result.items(), key=lambda x: x[1], reverse=True)
+
+import matplotlib.pyplot as plt
+def plot_statistics(result, statistics_name):
+    plt.figure(figsize=(12, 6))
+
+    # Create x-axis values (assuming each point represents a day)
+    for category, values in result.items():
+        if "-time" in category:
+            continue
+        x_values = result[f"{category}-time"]
+        plt.plot(x_values, values, marker='o', label=category)
+
+    plt.title(statistics_name)
+    plt.xlabel('Latest timestamp')
+    plt.ylabel('Average Creation Time')
+    plt.grid(True, linestyle='--', alpha=0.7)
+    plt.legend()
+
+    # Rotate x-axis labels for better readability
+    plt.xticks(rotation=45)
+
+    # Adjust layout to prevent label cutoff
+    plt.tight_layout()
+
+    plt.show()
 
 def _get_launch_time(logs, instance_id):
     for log in logs:
