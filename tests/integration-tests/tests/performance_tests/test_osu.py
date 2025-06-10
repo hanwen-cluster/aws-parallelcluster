@@ -25,10 +25,10 @@ from tests.common.utils import (
     run_system_analyzer,
     write_file,
 )
-from tests.performance_tests.common import push_result_to_dynamodb
+from tests.performance_tests.common import MAX_CPU_NUM, push_result_to_dynamodb
 
 # We collected OSU benchmarks results for c5n.18xlarge only.
-OSU_BENCHMARKS_INSTANCES = ["c5n.18xlarge"]
+OSU_BENCHMARKS_INSTANCES = ["c5n.18xlarge", "hpc7a.96xlarge"]
 
 
 @pytest.mark.usefixtures("serial_execution_by_instance")
@@ -58,7 +58,8 @@ def test_osu(
         head_node_instance = "c6g.16xlarge"
 
     slots_per_instance = fetch_instance_slots(region, instance, multithreading_disabled=True)
-    cluster_config = pcluster_config_reader(head_node_instance=head_node_instance)
+    num_instances = int(MAX_CPU_NUM / slots_per_instance)
+    cluster_config = pcluster_config_reader(head_node_instance=head_node_instance, num_instances=num_instances)
     cluster = clusters_factory(cluster_config)
     remote_command_executor = RemoteCommandExecutor(cluster)
     scheduler_commands = scheduler_commands_factory(remote_command_executor)
@@ -93,7 +94,7 @@ def test_osu(
                 output_dir,
                 os,
                 instance,
-                num_instances=32,
+                num_instances=num_instances,
                 slots_per_instance=slots_per_instance,
                 partition="efa-enabled",
             )

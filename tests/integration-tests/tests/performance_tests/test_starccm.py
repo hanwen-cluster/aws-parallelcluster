@@ -6,7 +6,7 @@ import pytest
 from remote_command_executor import RemoteCommandExecutionError, RemoteCommandExecutor
 
 from tests.common.utils import assert_no_file_handler_leak, fetch_instance_slots, get_compute_ip_to_num_files
-from tests.performance_tests.common import _log_output_performance_difference, push_result_to_dynamodb
+from tests.performance_tests.common import MAX_CPU_NUM, _log_output_performance_difference, push_result_to_dynamodb
 
 # timeout in seconds
 STARCCM_INSTALLATION_TIMEOUT = 1800
@@ -70,7 +70,12 @@ def test_starccm(
     scheduler_commands_factory,
     s3_bucket_factory,
 ):
-    number_of_nodes = [8, 16, 32]
+    instance_slots = fetch_instance_slots(region, instance, multithreading_disabled=True)
+    max_number_of_nodes = int(MAX_CPU_NUM / instance_slots)
+    if max_number_of_nodes == 32:
+        number_of_nodes = [8, 16, 32]
+    else:
+        number_of_nodes = [max_number_of_nodes]
     # Create S3 bucket for custom actions scripts
     bucket_name = s3_bucket_factory()
     s3 = boto3.client("s3")
@@ -79,7 +84,7 @@ def test_starccm(
     cluster_config = pcluster_config_reader(
         bucket_name=bucket_name,
         install_extra_deps=os in OSS_REQUIRING_EXTRA_DEPS,
-        number_of_nodes=max(number_of_nodes),
+        number_of_nodes=max_number_of_nodes,
     )
     cluster = clusters_factory(cluster_config)
     logging.info("Cluster Created")
@@ -99,13 +104,11 @@ def test_starccm(
     # Copy additional files in advanced to avoid conflict when running 8 and 16 nodes tests in parallel
     remote_command_executor._copy_additional_files([str(test_datadir / "starccm.slurm.sh")])
 
-    max_node_num = max(number_of_nodes)
     final_result = []
     for num_of_nodes in number_of_nodes:
-        parallelism = int(max_node_num / num_of_nodes)
+        parallelism = int(max_number_of_nodes / num_of_nodes)
         result = []
         logging.info(f"Submitting StarCCM+ job with {num_of_nodes} nodes")
-        instance_slots = fetch_instance_slots(region, instance, multithreading_disabled=True)
         run_command = f'sbatch --ntasks={num_of_nodes * instance_slots} starccm.slurm.sh "{podkey}" "{licpath}"'
         multiple_runs = []
         # Run at least twice up to whatever parallelism allows to maximize usage of available nodes

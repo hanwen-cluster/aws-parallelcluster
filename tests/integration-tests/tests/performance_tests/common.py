@@ -45,6 +45,8 @@ METRICS = [
 
 STATISTICS = ["min", "max", "avg", "std", "med", "prc25", "prc75"]
 
+MAX_CPU_NUM = 1152  # This equals to 32 c5n.18xlarge or 6 hpc7a.96xlarge
+
 
 def upload_bootstrap_scripts(s3_bucket_factory_shared, region):
     """Uploads all files in ./../resources/bootstrap to S3 at s3://{regional_bucket}/performance-tests/bootstrap."""
