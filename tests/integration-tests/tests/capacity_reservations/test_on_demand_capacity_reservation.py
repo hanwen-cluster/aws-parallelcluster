@@ -11,7 +11,10 @@
 # See the License for the specific language governing permissions and limitations under the License.
 import logging
 import os
+import re
 import subprocess
+import sys
+import shutil
 
 import boto3
 import pytest
@@ -43,11 +46,43 @@ def test_on_demand_capacity_reservation(
         pg_capacity_reservation_arn=resource_group_arn,
     )
 
-    # Apply patch to the repo
-    logging.info("Applying patch to the repository")
+    # Save information about the original pcluster installation
+    logging.info("Saving information about existing pcluster installation")
     repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../.."))
     s3_bucket_file = os.path.join(repo_root, "cli/src/pcluster/models/s3_bucket.py")
-
+    
+    # Save the original pcluster executable and package
+    original_pcluster_path = None
+    original_pcluster_content = None
+    original_package_dir = None
+    original_package_backup = os.path.join(os.path.expanduser("~"), ".pcluster_backup")
+    
+    # Find and backup the executable
+    result = subprocess.run(["which", "pcluster"], capture_output=True, text=True)
+    if result.returncode == 0:
+        original_pcluster_path = result.stdout.strip()
+        logging.info(f"Original pcluster found at: {original_pcluster_path}")
+        # Backup the executable content
+        if os.path.exists(original_pcluster_path):
+            with open(original_pcluster_path, "rb") as f:
+                original_pcluster_content = f.read()
+            logging.info("Backed up original pcluster executable content")
+    else:
+        logging.info("No existing pcluster executable found")
+        
+    # Find and backup the package
+    try:
+        import pcluster
+        original_package_dir = os.path.dirname(pcluster.__file__)
+        if os.path.exists(original_package_dir):
+            # Create backup directory
+            if os.path.exists(original_package_backup):
+                shutil.rmtree(original_package_backup)
+            # Copy the package directory
+            shutil.copytree(original_package_dir, original_package_backup)
+            logging.info(f"Backed up pcluster package from {original_package_dir} to {original_package_backup}")
+    except ImportError:
+        logging.info("No pcluster package found to backup")
     # Backup the original file
     with open(s3_bucket_file, "r") as f:
         original_content = f.read()
@@ -76,16 +111,47 @@ def test_on_demand_capacity_reservation(
         subprocess.run(["pip", "install", "./cli"], cwd=repo_root, check=True)
 
         # Create the cluster
-        cluster = clusters_factory(cluster_config)
+        cluster = clusters_factory(cluster_config, wait=False)
     finally:
         # Revert the patch by restoring the original file
         logging.info("Reverting patch from the repository")
         with open(s3_bucket_file, "w") as f:
             f.write(original_content)
+        
+        # Restore the original pcluster installation
+        logging.info("Restoring original pcluster installation")
+        
+        # Uninstall the modified version
+        subprocess.run(["pip", "uninstall", "-y", "aws-parallelcluster"], check=True)
+        
+        # Restore the package if we have a backup
+        if os.path.exists(original_package_backup):
+            try:
+                # Find the site-packages directory
+                import site
+                site_packages = site.getsitepackages()[0]
+                
+                # Restore the package directory
+                pcluster_dir = os.path.join(site_packages, "pcluster")
+                if os.path.exists(pcluster_dir):
+                    shutil.rmtree(pcluster_dir)
+                shutil.copytree(original_package_backup, pcluster_dir)
+                logging.info(f"Restored pcluster package to {pcluster_dir}")
+            except Exception as e:
+                logging.error(f"Failed to restore pcluster package: {e}")
+        
+        # Restore the executable if we have it
+        if original_pcluster_path and original_pcluster_content:
+            # Make sure the directory exists
+            os.makedirs(os.path.dirname(original_pcluster_path), exist_ok=True)
+            # Write back the original content
+            with open(original_pcluster_path, "wb") as f:
+                f.write(original_pcluster_content)
+            # Make sure it's executable
+            os.chmod(original_pcluster_path, 0o755)
+            logging.info(f"Restored original pcluster executable to {original_pcluster_path}")
 
-        # Reinstall the CLI
-        logging.info("Reinstalling CLI from local repository")
-        subprocess.run(["pip", "install", "./cli"], cwd=repo_root, check=True)
+    cluster.wait_cluster_status("CREATE_COMPLETE")
 
     _assert_instance_in_capacity_reservation(cluster, region, "open-odcr-id-cr", odcr_resources["integTestsOpenOdcr"])
     _assert_instance_in_capacity_reservation(cluster, region, "open-odcr-arn-cr", odcr_resources["integTestsOpenOdcr"])
