@@ -257,7 +257,9 @@ class Cluster:
         """Return ClusterConfig object."""
         if not self.__config:
             try:
-                self.__config = self._load_config(parse_config(self.source_config_text))
+                schema = ClusterSchema(cluster_name=self.name)
+                schema.source_config = parse_config(self.source_config_text)
+                self.__config = schema
             except ConfigValidationError as exc:
                 raise exc
             except Exception as e:
