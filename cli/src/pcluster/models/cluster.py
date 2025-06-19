@@ -158,6 +158,26 @@ def _cluster_error_mapper(error, message=None):
         return ClusterActionError(message)
 
 
+class ConfigWrapper:
+    """Wrapper for config objects that returns None for non-existent attributes."""
+    
+    def __init__(self, config=None):
+        self._config = config
+        
+    def __getattr__(self, name):
+        if self._config is None:
+            return None
+        return getattr(self._config, name, None)
+    
+    def __setattr__(self, name, value):
+        if name == "_config":
+            super().__setattr__(name, value)
+        elif self._config is not None:
+            setattr(self._config, name, value)
+        else:
+            super().__setattr__(name, value)
+
+
 class Cluster:
     """Represent a running cluster, composed by a ClusterConfig and a ClusterStack."""
 
@@ -259,7 +279,7 @@ class Cluster:
             try:
                 schema = ClusterSchema(cluster_name=self.name)
                 schema.source_config = parse_config(self.source_config_text)
-                self.__config = schema
+                self.__config = ConfigWrapper(schema)
             except ConfigValidationError as exc:
                 raise exc
             except Exception as e:
