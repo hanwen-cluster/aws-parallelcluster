@@ -207,7 +207,7 @@ def _get_statistics_by_node_nume(
             if os not in result[node_num]:
                 result[node_num][os] = []
                 result[node_num][os_time_key] = []
-            result[node_num][os].append(performance)
+            result[node_num][os].append(float(performance))
             result[node_num][os_time_key].append(datetime.datetime.fromtimestamp(int(item["timestamp"]["N"])).strftime("%Y-%m-%d %H:%M"))
     for node_num, node_num_result in result.items():
         plot_statistics(node_num_result, node_num)
