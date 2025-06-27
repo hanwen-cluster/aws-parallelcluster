@@ -219,12 +219,21 @@ import matplotlib.pyplot as plt
 def plot_statistics(result, statistics_name):
     plt.figure(figsize=(12, 6))
 
-    # Create x-axis values (assuming each point represents a day)
+    # Collect all unique timestamps and sort them
+    all_timestamps = set()
+    for category in result:
+        if "-time" in category:
+            all_timestamps.update(result[category])
+    sorted_timestamps = sorted(all_timestamps)
+
+    # Plot each category using the global sorted timestamps
     for category, values in result.items():
         if "-time" in category:
             continue
         x_values = result[f"{category}-time"]
-        plt.plot(x_values, values, marker='o', label=category)
+        time_to_value = dict(zip(x_values, values))
+        sorted_values = [time_to_value.get(t) for t in sorted_timestamps]
+        plt.plot(sorted_timestamps, sorted_values, marker='o', label=category)
 
     plt.title(statistics_name)
     plt.xlabel('Latest timestamp')
