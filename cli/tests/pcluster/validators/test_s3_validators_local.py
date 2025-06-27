@@ -1,3 +1,5 @@
+import ast
+import json
 import time
 from collections import defaultdict
 
@@ -83,6 +85,57 @@ def test_url_validator():
     print(all_items)
 
 
+
+def test_performance_validator():
+    dynamodb_client = boto3.client("dynamodb", region_name="us-east-1")
+    current_time = int(time.time())
+    one_month_ago = current_time - (300 * 24 * 60 * 60)
+
+    filter_expression = "#timestamp >= :one_month_ago"
+    expression_attribute_values = {":one_month_ago": {"N": str(one_month_ago)}}
+    all_items = []
+    last_evaluated_key = None
+    while True:
+        projection_expression = (
+            "#instance, #name, #os, #result, #timestamp"
+        )
+        expression_attribute_names = {
+            "#instance": "instance",
+            "#name": "name",
+            "#os": "os",
+            "#result": "result",
+            "#timestamp": "timestamp",
+        }
+        # Parameters for the scan operation
+        scan_params = {
+            "TableName": "ParallelCluster-PerformanceTest-Metadata",
+            "ProjectionExpression": projection_expression,
+            "FilterExpression": filter_expression,
+            "ExpressionAttributeNames": expression_attribute_names,
+            "ExpressionAttributeValues": expression_attribute_values,
+        }
+
+        # Add ExclusiveStartKey if we're not on the first iteration
+        if last_evaluated_key:
+            scan_params["ExclusiveStartKey"] = last_evaluated_key
+
+        response = dynamodb_client.scan(**scan_params)
+        all_items.extend(response.get("Items", []))
+
+        # Check if there are more items to fetch
+        last_evaluated_key = response.get("LastEvaluatedKey")
+        if not last_evaluated_key:
+            break
+    all_items.sort(key=lambda x: x["timestamp"]["N"], reverse=True)
+    items_by_name = defaultdict(list)
+    for item in all_items:
+        items_by_name[item["name"]["S"]].append(item)
+    result = defaultdict(dict)
+    for name, items in items_by_name.items():
+        result[name] = _get_statistics_by_node_nume(items)
+    print(all_items)
+
+
 def _mean(x):
     return sum(x) / len(x)
 
@@ -139,6 +192,28 @@ def _get_statistics_by_category(
     plot_statistics(result, statistics_name)
     return result
     # return sorted(result.items(), key=lambda x: x[1], reverse=True)
+
+def _get_statistics_by_node_nume(
+        all_items
+):
+    result = {}
+    for item in all_items:
+        this_result = ast.literal_eval(item["result"]["S"])
+        for node_num, performance in this_result:
+            if node_num not in result:
+                result[node_num] = {}
+            os = item["os"]["S"]
+            os_time_key = f"{os}-time"
+            if os not in result[node_num]:
+                result[node_num][os] = []
+                result[node_num][os_time_key] = []
+            result[node_num][os].append(performance)
+            result[node_num][os_time_key].append(datetime.datetime.fromtimestamp(int(item["timestamp"]["N"])).strftime("%Y-%m-%d %H:%M"))
+    for node_num, node_num_result in result.items():
+        plot_statistics(node_num_result, node_num)
+    return result
+    # return sorted(result.items(), key=lambda x: x[1], reverse=True)
+
 
 import matplotlib.pyplot as plt
 def plot_statistics(result, statistics_name):
