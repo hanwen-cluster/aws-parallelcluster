@@ -219,25 +219,29 @@ import matplotlib.pyplot as plt
 def plot_statistics(result, statistics_name):
     plt.figure(figsize=(12, 6))
 
-    # Create x-axis values (assuming each point represents a day)
+    # Collect and sort all unique time points
+    all_times = set()
+    for category, values in result.items():
+        if "-time" in category:
+            all_times.update(values)
+    sorted_times = sorted(all_times)
+    time_to_index = {time: i for i, time in enumerate(sorted_times)}
+
+    # Plot each category using numeric x positions
     for category, values in result.items():
         if "-time" in category:
             continue
         x_values = result[f"{category}-time"]
-        plt.plot(x_values, values, marker='o', label=category)
+        x_positions = [time_to_index[time] for time in x_values]
+        plt.plot(x_positions, values, marker='o', label=category)
 
     plt.title(statistics_name)
     plt.xlabel('Latest timestamp')
     plt.ylabel('Average Creation Time')
     plt.grid(True, linestyle='--', alpha=0.7)
     plt.legend()
-
-    # Rotate x-axis labels for better readability
-    plt.xticks(rotation=45)
-
-    # Adjust layout to prevent label cutoff
+    plt.xticks(range(len(sorted_times)), sorted_times, rotation=45)
     plt.tight_layout()
-
     plt.show()
 
 def _get_launch_time(logs, instance_id):
