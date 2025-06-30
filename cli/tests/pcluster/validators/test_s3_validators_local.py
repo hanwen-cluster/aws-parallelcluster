@@ -132,7 +132,7 @@ def test_performance_validator():
         items_by_name[item["name"]["S"]].append(item)
     result = defaultdict(dict)
     for name, items in items_by_name.items():
-        result[name] = _get_statistics_by_node_nume(items)
+        result[name] = _get_statistics_by_node_nume(items, name)
     print(all_items)
 
 
@@ -194,7 +194,7 @@ def _get_statistics_by_category(
     # return sorted(result.items(), key=lambda x: x[1], reverse=True)
 
 def _get_statistics_by_node_nume(
-        all_items
+        all_items, name
 ):
     result = {}
     for item in all_items:
@@ -210,14 +210,14 @@ def _get_statistics_by_node_nume(
             result[node_num][os].append(float(performance))
             result[node_num][os_time_key].append(datetime.datetime.fromtimestamp(int(item["timestamp"]["N"])).strftime("%Y-%m-%d %H:%M"))
     for node_num, node_num_result in result.items():
-        plot_statistics(node_num_result, node_num)
+        plot_statistics(node_num_result, node_num, name)
     return result
     # return sorted(result.items(), key=lambda x: x[1], reverse=True)
 
 
 import matplotlib.pyplot as plt
-def plot_statistics(result, statistics_name):
-    plt.figure(figsize=(12, 6))
+def plot_statistics(result, statistics_name, category_name=""):
+    plt.figure(figsize=(24, 12))
 
     # Collect and sort all unique time points
     all_times = set()
@@ -235,7 +235,7 @@ def plot_statistics(result, statistics_name):
         x_positions = [time_to_index[time] for time in x_values]
         plt.plot(x_positions, values, marker='o', label=category)
 
-    plt.title(statistics_name)
+    plt.title(category_name+str(statistics_name))
     plt.xlabel('Latest timestamp')
     plt.ylabel('Average Creation Time')
     plt.grid(True, linestyle='--', alpha=0.7)
