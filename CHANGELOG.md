@@ -4,6 +4,9 @@ CHANGELOG
 3.14.0
 ------
 
+**ENHANCEMENTS**
+- Echo chef-client.log in EC2 console logs when a node fails to bootstrap. This helps with investigating bootstrap failures in cases where the cluster is deleted and logs were not pushed to CloudWatch Logs.
+
 **CHANGES**
 - Ubuntu 20.04 is no longer supported.
 
