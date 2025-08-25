@@ -84,6 +84,80 @@ def test_url_validator():
             )
     print(all_items)
 
+def _get_failing_rate(all_items, timestamp, time_window):
+    failing_rate = 0
+    item_count = 0
+    for item in all_items:
+        if timestamp <= float(item["call_start_time"]["N"]) <= timestamp + time_window:
+            # Filter result only from 10pm to 11am
+            hour = datetime.datetime.fromtimestamp(float(item["call_start_time"]["N"])).hour
+            if hour >= 22 or hour <=11:
+                item_count += 1
+                if item["call_status"]["S"] != "passed":
+                    failing_rate += 1
+    return failing_rate / item_count
+
+def test_failing_rate():
+    dynamodb_client = boto3.client("dynamodb", region_name="us-east-1")
+    current_time = int(time.time())
+    analysis_start_time = current_time - (450 * 24 * 60 * 60)
+
+    filter_expression = "#call_start_time >= :analysis_start_time"
+    expression_attribute_values = {":analysis_start_time": {"N": str(analysis_start_time)}}
+    all_items = []
+    last_evaluated_key = None
+    while True:
+        projection_expression = (
+            "#status, #avg_launch, #max_launch, #min_launch, #creation_time, #name, #os, #start_time"
+        )
+        expression_attribute_names = {
+            "#call_start_time": "call_start_time",
+            "#status": "call_status",
+            "#avg_launch": "compute_average_launch_time",
+            "#max_launch": "compute_max_launch_time",
+            "#min_launch": "compute_min_launch_time",
+            "#creation_time": "cluster_creation_time",
+            "#name": "name",
+            "#os": "os",
+            "#start_time": "call_start_time",
+        }
+        # Parameters for the scan operation
+        scan_params = {
+            "TableName": "ParallelCluster-IntegTest-Metadata",
+            "ProjectionExpression": projection_expression,
+            "FilterExpression": filter_expression,
+            "ExpressionAttributeNames": expression_attribute_names,
+            "ExpressionAttributeValues": expression_attribute_values,
+        }
+
+        # Add ExclusiveStartKey if we're not on the first iteration
+        if last_evaluated_key:
+            scan_params["ExclusiveStartKey"] = last_evaluated_key
+
+        response = dynamodb_client.scan(**scan_params)
+        all_items.extend(response.get("Items", []))
+
+        # Check if there are more items to fetch
+        last_evaluated_key = response.get("LastEvaluatedKey")
+        if not last_evaluated_key:
+            break
+    all_items.sort(key=lambda x: x["call_start_time"]["N"], reverse=True)
+    result = []
+    timestamps = []
+
+    timestamp_pointer = analysis_start_time
+    time_window = 3 * 24 * 60 * 60
+    while timestamp_pointer < current_time:
+        timestamps.append(timestamp_pointer)
+        result.append(_get_failing_rate(all_items, timestamp_pointer, time_window))
+        timestamp_pointer += time_window
+    x_values = [datetime.datetime.fromtimestamp(ts).strftime('%Y-%m-%d') for ts in timestamps]
+    import matplotlib.pyplot as plt
+    plt.figure(figsize=(24, 12))
+    plt.plot(x_values, result)
+    plt.show()
+    print(timestamps)
+
 
 
 def test_performance_validator():
