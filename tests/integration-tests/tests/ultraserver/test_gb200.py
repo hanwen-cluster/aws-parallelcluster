@@ -15,10 +15,12 @@ import time
 from datetime import datetime
 
 import boto3
+from time_utils import seconds
 import pytest
 from assertpy import assert_that, soft_assertions
 from clusters_factory import Cluster
 from remote_command_executor import RemoteCommandExecutor
+from retrying import retry
 from utils import wait_for_computefleet_changed
 
 from tests.common.assertions import assert_regex_in_file, wait_for_instances_in_compute_resource
@@ -183,7 +185,7 @@ def assert_imex_status(
             assert_that(connection_item).is_not_none()
             assert_that(connection_item["status"]).is_equal_to(connection_status)
 
-
+@retry(wait_fixed=seconds(30), stop_max_delay=seconds(700))
 def assert_imex_healthy(cluster: Cluster, queue: str, compute_resource: str, max_nodes: int = 1):
     def _check_imex_healthy():
         rce = RemoteCommandExecutor(cluster)
