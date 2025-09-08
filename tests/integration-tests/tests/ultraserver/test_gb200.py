@@ -421,6 +421,7 @@ def test_gb200(
     This is a reasonable approximation for the test because the focus of the test is on IMEX and topology configuration,
     which can be executed on g4dn as well.
     """
+    time.sleep(600)
     capacity_max_queue_size = capacity_reservation_id = None
     if instance == "p6e-gb200.36xlarge":
         ultraserver_reservations_ids = get_ultraserver_capacity_reservation_id(instance, region)
