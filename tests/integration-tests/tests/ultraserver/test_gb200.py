@@ -435,7 +435,7 @@ def test_gb200(
     if instance == "p6e-gb200.36xlarge":
         ultraserver_reservations_ids = get_ultraserver_capacity_reservation_id(instance, region)
         if ultraserver_reservations_ids:
-            capacity_reservation_id = "cr-040b3507f83e9eb74"
+            capacity_reservation_id = "cr-0f5aadeeafcd668bf"
             capacity_max_queue_size = 2
         else:
             pytest.skip(f"Skipping the test No Capacity Block for {instance} was found in {region}")
