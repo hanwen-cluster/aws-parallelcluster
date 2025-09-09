@@ -15,24 +15,32 @@ import time
 from datetime import datetime
 
 import boto3
-
-from tests.common.nccl_common import install_and_run_nccl_benchmarks
-from time_utils import seconds
 import pytest
 import xmltodict
 from assertpy import assert_that, soft_assertions
 from clusters_factory import Cluster
 from remote_command_executor import RemoteCommandExecutor
-from tests.common.mpi_common import _test_mpi
-from tests.efa.test_efa import FABTESTS_BASIC_TESTS, FABTESTS_GDRCOPY_TESTS, _test_efa_installation, _test_shm_transfer_is_enabled
-from utils import wait_for_computefleet_changed, get_compute_nodes_instance_ids
 from retrying import retry
+from time_utils import seconds
+from utils import get_compute_nodes_instance_ids, wait_for_computefleet_changed
 
 from tests.common.assertions import assert_regex_in_file, wait_for_instances_in_compute_resource
+from tests.common.mpi_common import _test_mpi
 from tests.common.nccl_common import install_and_run_nccl_benchmarks
 from tests.common.schedulers_common import SlurmCommands
-from tests.common.utils import is_existing_remote_file, read_remote_file, terminate_nodes_manually, \
-    wait_process_completion, fetch_instance_slots
+from tests.common.utils import (
+    fetch_instance_slots,
+    is_existing_remote_file,
+    read_remote_file,
+    terminate_nodes_manually,
+    wait_process_completion,
+)
+from tests.efa.test_efa import (
+    FABTESTS_BASIC_TESTS,
+    FABTESTS_GDRCOPY_TESTS,
+    _test_efa_installation,
+    _test_shm_transfer_is_enabled,
+)
 
 # We use placeholder IPs just to get IMEX started.
 # These values are hardwired in the cookbook.
@@ -190,6 +198,7 @@ def assert_imex_status(
             )
             assert_that(connection_item).is_not_none()
             assert_that(connection_item["status"]).is_equal_to(connection_status)
+
 
 @retry(wait_fixed=seconds(30), stop_max_delay=seconds(700))
 def assert_imex_healthy(cluster: Cluster, queue: str, compute_resource: str, max_nodes: int = 1):
@@ -380,7 +389,7 @@ def get_ultraserver_capacity_reservation_id(instance, region):
     return ultraserver_reservations_ids
 
 
-@pytest.mark.usefixtures("region", "os", "instance", "scheduler")
+@pytest.mark.usefixtures("os")
 def test_gb200(
     pcluster_config_reader,
     file_reader,
@@ -389,6 +398,7 @@ def test_gb200(
     s3_bucket_factory,
     region,
     instance,
+    scheduler,
     scheduler_commands_factory,
 ):
     """
@@ -488,6 +498,8 @@ def test_gb200(
             assert_imex_not_configured(cluster, queue_without_imex, compute_resource_without_imex)
         # Topology Plugin is Cluster wide setup so we check if compute_resource_without_imex is not in that file
         assert_topology_plugin_not_configured_for_queue(cluster, queue_without_imex, compute_resource_without_imex)
+
+    _test_mpi(remote_command_executor, slots_per_instance, scheduler, scheduler_commands, partition=queue_with_imex)
 
     if instance.startswith("p"):
         # Doc of supported instance types and operating systems:
