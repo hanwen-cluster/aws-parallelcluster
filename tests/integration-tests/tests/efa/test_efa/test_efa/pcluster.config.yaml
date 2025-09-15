@@ -24,9 +24,6 @@ Scheduling:
           - {{ private_subnet_id }}
       ComputeResources:
         - Name: efa-enabled-i1
-          HealthChecks:
-            Gpu:
-              Enabled: true
           InstanceType: {{ instance }}
           MaxCount: 2
           MinCount: 2
