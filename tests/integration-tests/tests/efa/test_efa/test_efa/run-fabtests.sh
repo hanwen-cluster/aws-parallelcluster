@@ -47,6 +47,7 @@ python3 $FABTESTS_RUNNER \
   --expression "$TEST_EXPRESSION" \
   --timeout $FABTESTS_TIMEOUT \
   --junit-xml $REPORT_FILE \
+  -E FI_LOG_LEVEL=warn \
   --do-dmabuf-reg-for-hmem \
   -v $TEST_ENVIRONMENT_OPTION $COMPUTE_IP_1 $COMPUTE_IP_2 > $LOG_FILE 2>&1 &
 
