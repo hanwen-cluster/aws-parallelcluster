@@ -17,18 +17,27 @@ Scheduling:
         Enabled: true
     ComputeResources:
     - Name: compute-resource-1
+      CapacityType: CAPACITY_BLOCK
+      CapacityReservationTarget:
+        CapacityReservationId: cr-0e458f9cb3046e89f
       Instances:
         - InstanceType: {{ instance }}
       HealthChecks:
         Gpu:
           Enabled: false
     - Name: compute-resource-2
+      CapacityType: CAPACITY_BLOCK
+      CapacityReservationTarget:
+        CapacityReservationId: cr-0e458f9cb3046e89f
       Instances:
         - InstanceType: {{ instance }}
       HealthChecks:
         Gpu:
           Enabled: true
     - Name: compute-resource-3
+      CapacityType: CAPACITY_BLOCK
+      CapacityReservationTarget:
+        CapacityReservationId: cr-0e458f9cb3046e89f
       Instances:
         - InstanceType: {{ instance }}
       MinCount: 1
@@ -55,6 +64,9 @@ Scheduling:
   - Name: queue-2
     ComputeResources:
     - Name: compute-resource-1
+      CapacityType: CAPACITY_BLOCK
+      CapacityReservationTarget:
+        CapacityReservationId: cr-0e458f9cb3046e89f
       Instances:
         - InstanceType: {{ instance }}
       HealthChecks:
