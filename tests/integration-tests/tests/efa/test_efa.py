@@ -11,9 +11,11 @@
 # See the License for the specific language governing permissions and limitations under the License.
 import logging
 
+import pytest
 import xmltodict
 from assertpy import assert_that, soft_assertions
 from remote_command_executor import RemoteCommandExecutor
+from tests.ultraserver.test_gb200 import get_capacity_reservation_id
 from utils import get_compute_nodes_instance_ids
 
 from tests.common.assertions import assert_no_errors_in_logs
@@ -47,9 +49,17 @@ def test_efa(
         head_node_instance = "c5.18xlarge"
     else:
         head_node_instance = "c6g.16xlarge"
+    max_queue_size = 2
+    capacity_reservation_id = None
+    if instance == "p6-b200.48xlarge":
+        capacity_reservations_ids = get_capacity_reservation_id(instance, region, max_queue_size)
+        if capacity_reservations_ids:
+            capacity_reservation_id = capacity_reservations_ids[0].get("CapacityReservationId")
+        else:
+            pytest.skip(f"Skipping the test No Capacity Block for {instance} was found in {region}")
 
     slots_per_instance = fetch_instance_slots(region, instance, multithreading_disabled=True)
-    cluster_config = pcluster_config_reader(head_node_instance=head_node_instance)
+    cluster_config = pcluster_config_reader(head_node_instance=head_node_instance, max_queue_size=max_queue_size, capacity_reservation_id=capacity_reservation_id)
     cluster = clusters_factory(cluster_config)
     remote_command_executor = RemoteCommandExecutor(cluster)
     scheduler_commands = scheduler_commands_factory(remote_command_executor)

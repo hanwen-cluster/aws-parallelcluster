@@ -402,15 +402,14 @@ def test_gb200(
     which can be executed on g4dn as well.
     """
     capacity_max_queue_size = capacity_reservation_id = None
+    max_queue_size = 2
     if instance == "p6e-gb200.36xlarge":
-        ultraserver_reservations_ids = get_ultraserver_capacity_reservation_id(instance, region)
+        ultraserver_reservations_ids = get_capacity_reservation_id(instance, region, max_queue_size)
         if ultraserver_reservations_ids:
             capacity_reservation_id = ultraserver_reservations_ids[0].get("CapacityReservationId")
-            capacity_max_queue_size = ultraserver_reservations_ids[0].get("TotalCapacity")
         else:
             pytest.skip(f"Skipping the test No Capacity Block for {instance} was found in {region}")
 
-    max_queue_size = 2 if capacity_max_queue_size is None else capacity_max_queue_size
     min_queue_size_without_imex = 1 if instance != "p6e-gb200.36xlarge" else 0
     capacity_block_reservation_id = capacity_reservation_id if instance == "p6e-gb200.36xlarge" else None
 
