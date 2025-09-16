@@ -339,31 +339,23 @@ def assert_topology_plugin_completely_disabled(cluster: Cluster):
     logging.info("TopologyPlugin correctly completely disabled")
 
 
-def get_ultraserver_capacity_reservation_id(instance, region):
+def get_capacity_reservation_id(instance_type, region, count):
     ec2_client = boto3.client("ec2", region_name=region)
-    paginator = ec2_client.get_paginator("describe_capacity_block_status")
-
+    paginator = ec2_client.get_paginator("describe_capacity_reservationss")
     # List to store matching reservation IDs
-    ultraserver_reservations_ids = []
-
+    reservations_ids = []
     # Paginate through the results
     for page in paginator.paginate():
-        for block in page.get("CapacityBlockStatuses", []):
-            for reservation in block.get("CapacityReservationStatuses", []):
-                # Check if TotalCapacity equals TotalAvailableCapacity
-                if (
-                    reservation.get("TotalCapacity") == reservation.get("TotalAvailableCapacity")
-                    and reservation.get("TotalCapacity") is not None
-                ):
-
-                    ultraserver_reservations_ids.append(
-                        {
-                            "CapacityReservationId": reservation["CapacityReservationId"],
-                            "TotalCapacity": reservation["TotalCapacity"],
-                        }
-                    )
-
-    return ultraserver_reservations_ids
+        for reservation in page.get("CapacityReservations", []):
+            if instance_type == reservation.get("InstanceType") and reservation.get("AvailableInstanceCount") >= count:
+                reservations_ids.append(
+                    {
+                        "CapacityReservationId": reservation["CapacityReservationId"],
+                        "TotalInstanceCount": reservation["TotalInstanceCount"],
+                        "AvailableInstanceCount": reservation["AvailableInstanceCount"]
+                    }
+                )
+    return reservations_ids
 
 
 @pytest.mark.usefixtures("serial_execution_by_instance")
