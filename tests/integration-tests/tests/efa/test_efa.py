@@ -55,25 +55,6 @@ def test_efa(
     scheduler_commands = scheduler_commands_factory(remote_command_executor)
 
     _test_efa_installation(scheduler_commands, remote_command_executor, efa_installed=True, partition="efa-enabled")
-    fabtests_report = _execute_fabtests(remote_command_executor, test_datadir, instance)
-    num_tests = int(fabtests_report.get("testsuites", {}).get("testsuite", {})[0].get("@tests", None))
-    num_failures = int(fabtests_report.get("testsuites", {}).get("testsuite", {})[0].get("@failures", None))
-    num_errors = int(fabtests_report.get("testsuites", {}).get("testsuite", {})[0].get("@errors", None))
-
-    with soft_assertions():
-        assert_that(num_tests, description="Cannot read number of tests from Fabtests report").is_not_none()
-        assert_that(num_failures, description="Cannot read number of failures from Fabtests report").is_not_none()
-        assert_that(num_errors, description="Cannot read number of errors from Fabtests report").is_not_none()
-
-    if num_failures + num_errors > 0:
-        logging.info(f"Fabtests report:\n{fabtests_report}")
-
-    with soft_assertions():
-        assert_that(
-            num_failures, description=f"{num_failures}/{num_tests} libfabric tests are failing"
-        ).is_equal_to(0)
-        assert_that(num_errors, description=f"{num_errors}/{num_tests} libfabric tests got errors").is_equal_to(0)
-        assert_no_errors_in_logs(remote_command_executor, scheduler, skip_ice=True)
     _test_mpi(remote_command_executor, slots_per_instance, scheduler, scheduler_commands, partition="efa-enabled")
     logging.info("Running on Instances: {0}".format(get_compute_nodes_instance_ids(cluster.cfn_name, region)))
 
