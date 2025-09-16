@@ -13,10 +13,10 @@ Scheduling:
   Scheduler: {{ scheduler }}
   SlurmQueues:
     - Name: efa-enabled
-      {% if capacity_block_reservation_id %}
+      {% if capacity_reservation_id %}
       CapacityType: CAPACITY_BLOCK
       CapacityReservationTarget:
-        CapacityReservationId: {{ capacity_block_reservation_id }}
+        CapacityReservationId: {{ capacity_reservation_id }}
       {% endif %}
       Networking:
         PlacementGroup:

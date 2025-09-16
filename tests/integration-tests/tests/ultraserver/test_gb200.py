@@ -341,7 +341,7 @@ def assert_topology_plugin_completely_disabled(cluster: Cluster):
 
 def get_capacity_reservation_id(instance_type, region, count):
     ec2_client = boto3.client("ec2", region_name=region)
-    paginator = ec2_client.get_paginator("describe_capacity_reservationss")
+    paginator = ec2_client.get_paginator("describe_capacity_reservations")
     # List to store matching reservation IDs
     reservations_ids = []
     # Paginate through the results
