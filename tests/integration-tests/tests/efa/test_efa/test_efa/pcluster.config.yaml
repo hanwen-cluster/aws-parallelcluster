@@ -15,7 +15,7 @@ Scheduling:
     - Name: efa-enabled
       CapacityType: CAPACITY_BLOCK
       CapacityReservationTarget:
-        CapacityReservationId: cr-0e458f9cb3046e89f
+        CapacityReservationId: cr-0f1843521c6ab8ee8
       Networking:
         PlacementGroup:
           Enabled: {% if instance not in ["p4d.24xlarge", "p6-b200.48xlarge"] %}true{% else %}false{% endif %}
