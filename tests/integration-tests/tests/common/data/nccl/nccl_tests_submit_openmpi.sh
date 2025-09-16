@@ -17,7 +17,6 @@ mpirun \
 -x FI_PROVIDER="efa" \
 -x FI_EFA_USE_DEVICE_RDMA=1 \
 -x LD_LIBRARY_PATH=/shared/openmpi/nccl-${NCCL_VERSION}/build/lib/:${OFI_PATH}:$LD_LIBRARY_PATH \
--x RDMAV_FORK_SAFE=1 \
 -x NCCL_DEBUG=WARNING \
 -x NCCL_TESTS_SPLIT_MASK=0x0 \
 --mca pml ^cm --mca btl tcp,self --mca btl_tcp_if_exclude lo,docker0 --bind-to none \
