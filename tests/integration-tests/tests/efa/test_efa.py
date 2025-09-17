@@ -60,7 +60,7 @@ def test_efa(
     if instance == "p6-b200.48xlarge":
         capacity_reservations_ids = get_capacity_reservation_id(instance, region, max_queue_size)
         if capacity_reservations_ids:
-            p6_b200_capacity_reservation_id = capacity_reservations_ids[0].get("CapacityReservationId")
+            p6_b200_capacity_reservation_id = "cr-0caea79b87c9075d8"
         else:
             pytest.skip(f"Skipping the test No Capacity Block for {instance} was found in {region}")
 
