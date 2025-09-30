@@ -333,8 +333,8 @@ def vpc_stacks_shared(cfn_stacks_factory, request, key_name):
                         default_gateway=Gateways.NONE,
                     )
                 )
-
-        for index, (az_id, az_name) in enumerate(get_az_id_to_az_name_map(region, credential, zone_types=["local-zone"]).items()):
+        zone_type= "local-zone"
+        for index, (az_id, az_name) in enumerate(get_az_id_to_az_name_map(region, credential, zone_types=[zone_type]).items()):
             # Subnets visual representation:
             # http://www.davidc.net/sites/default/subnets/subnets.html?network=192.168.0.0&mask=16&division=7.70
             index = -index -1
@@ -346,6 +346,7 @@ def vpc_stacks_shared(cfn_stacks_factory, request, key_name):
                     has_nat_gateway=False,
                     availability_zone=az_name,
                     default_gateway=Gateways.INTERNET_GATEWAY,
+                    zone_type=zone_type,
                 )
             )
             subnets.append(
