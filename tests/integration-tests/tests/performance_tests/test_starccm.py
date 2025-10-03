@@ -58,6 +58,7 @@ def calculate_observed_value(result, remote_command_executor, scheduler_commands
 
 
 @pytest.mark.usefixtures("serial_execution_by_instance")
+@pytest.mark.flaky(reruns=0)
 def test_starccm(
     vpc_stack,
     instance,
