@@ -170,7 +170,7 @@ class NetworkTemplateBuilder:
                     first_nat_gateway = nat_gateway_per_az_map[subnet_config.availability_zone]
             if subnet_config.zone_type == "local-zone":
                 nat_gateway_per_az_map[subnet_config.availability_zone] = first_nat_gateway
-            if subnet_config.default_gateway == Gateways.INTERNET_GATEWAY:
+            if subnet_config.zone_type == "availability-zone" and subnet_config.default_gateway == Gateways.INTERNET_GATEWAY:
                 bastion_subnet_ref = Ref(subnet)
             if subnet_config.default_gateway == Gateways.NONE:
                 no_internet_subnet_ref = Ref(subnet)
