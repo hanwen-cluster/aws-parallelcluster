@@ -98,7 +98,7 @@ def test_invalid_config(
     )
     assert_that(suppressed.message).contains("Request would have succeeded")
 
-@pytest.mark.flaky(only_rerun=["ImageNotFound"])
+@pytest.mark.flaky(only_rerun=["ImageNotFoundd"])
 @pytest.mark.usefixtures("scheduler")
 def test_build_image(
     region,
