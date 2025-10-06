@@ -42,8 +42,8 @@ SharedStorage:
       StorageCapacity: 1200
       ImportPath: s3://{{ bucket_name }}
       ExportPath: s3://{{ bucket_name }}/export_dir
-      DeploymentType: PERSISTENT_1
-      PerUnitStorageThroughput: 50
+      DeploymentType: PERSISTENT_2
+      PerUnitStorageThroughput: 125
   {% for fsx_fs_id in existing_fsx_lustre_fs_ids %}
   - MountDir: {{ fsx_lustre_mount_dirs[loop.index] }} # the index of mount dirs starts from the second item. Because the first is used for the new FSx.
     Name: existingfsx{{ loop.index-1 }}

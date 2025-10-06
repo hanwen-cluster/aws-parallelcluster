@@ -82,7 +82,7 @@ ZONE_ID_MAPPING = {
     "eu-south-1": "^eus1-az[0-9]",
     "me-south-1": "^mes1-az[0-9]",
     "sa-east-1": "^sae1-az[0-9]",
-    "us-east-1": "^use1-az[0-9]",
+    "us-east-1": "^use1.*-az[0-9]",
     "us-east-2": "^use2-az[0-9]",
     "us-west-1": "^usw1-az[0-9]",
     "us-west-2": "^usw2-az[0-9]",

@@ -530,7 +530,7 @@ def _create_fsx_lustre_volume_ids(num_existing_fsx_lustre, fsx_factory, import_p
             title="lustreConfiguration",
             ImportPath=import_path,
             ExportPath=export_path,
-            DeploymentType="PERSISTENT_1",
+            DeploymentType="PERSISTENT_2",
             PerUnitStorageThroughput=50,
         ),
         FileSystemTypeVersion="2.15",
