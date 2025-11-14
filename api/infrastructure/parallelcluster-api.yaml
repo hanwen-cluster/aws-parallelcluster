@@ -175,7 +175,7 @@ Resources:
         - UseCustomPoliciesTemplateUri
         - !Ref PoliciesTemplateUri
         - !Sub
-          - "https://${AWS::Region}-aws-parallelcluster.s3.${AWS::Region}.${AWS::URLSuffix}/parallelcluster/${Version}/templates/policies/policies.yaml"
+          - "https://${AWS::Region}-aws-parallelcluster.s3.${AWS::Region}.${AWS::URLSuffix}/parallelcluster/${Version}.1/templates/policies/policies.yaml"
           - { Version: !FindInMap [ParallelCluster, Constants, Version] }
       TimeoutInMinutes: 10
       Parameters:
@@ -197,7 +197,7 @@ Resources:
       Content:
         S3Bucket: !If [ UseCustomBucket, !Ref CustomBucket, !Sub "${AWS::Region}-aws-parallelcluster" ]
         S3Key: !Sub
-          - parallelcluster/${Version}/layers/aws-parallelcluster/lambda-layer.zip
+          - parallelcluster/${Version}.1/layers/aws-parallelcluster/lambda-layer.zip
           - { Version: !FindInMap [ParallelCluster, Constants, Version]}
       CompatibleRuntimes:
         - python3.12
