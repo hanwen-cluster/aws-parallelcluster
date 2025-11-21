@@ -1508,7 +1508,7 @@ class ClusterCdkStack:
                             f" '{self.wait_condition_handle.ref}' ||"
                             f" $CFN_BOOTSTRAP_VIRTUALENV_PATH/cfn-signal --exit-code=1 --reason='Update failed'"
                             f" --region {self.stack.region} --url {cloudformation_url}"
-                            f" '{self.wait_condition_handle.ref}'"
+                            f" '{self.wait_condition_handle.ref}' || true"
                         ),
                         "cwd": "/etc/chef",
                     }
