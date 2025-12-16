@@ -11,17 +11,8 @@ HeadNode:
     AllowedIps: 0.0.0.0/0
   Imds:
     Secured: {{ imds_secured }}
-  CustomActions:
-    OnNodeStart:
-      Script: s3://{{ bucket_name }}/scripts/pre_install.sh
-  Iam:
-    S3Access:
-      - BucketName: {{ bucket_name }}
-        EnableWriteAccess: false
-  {% if dcv_supported and (os != "ubuntu2004" or architechture=="x86_64") %}
   Dcv:
     Enabled: true
-  {% endif %}
 Scheduling:
   Scheduler: {{ scheduler }}
   SlurmSettings:
@@ -44,13 +35,6 @@ Scheduling:
         - {{ vpc_default_security_group_id }}
       PlacementGroup:
         Enabled: true
-    CustomActions:
-      OnNodeStart:
-        Script: s3://{{ bucket_name }}/scripts/pre_install.sh
-    Iam:
-      S3Access:
-        - BucketName: {{ bucket_name }}
-          EnableWriteAccess: false
 SharedStorage:
   - MountDir: efs
     Name: myefs
@@ -73,9 +57,3 @@ Tags:
     Value: String
   - Key: two
     Value: two22
-DeploymentSettings:
-  LambdaFunctionsVpcConfig:
-    SecurityGroupIds:
-    - {{ default_vpc_security_group_id }}
-    SubnetIds:
-    - {{ no_internet_subnet_id }}
