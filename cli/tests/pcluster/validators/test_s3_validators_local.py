@@ -1,156 +1,20 @@
-# Copyright 2019 Amazon.com, Inc. or its affiliates. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License").
-# You may not use this file except in compliance with the License.
-# A copy of the License is located at
-#
-# http://aws.amazon.com/apache2.0/
-#
-# or in the "LICENSE.txt" file accompanying this file.
-# This file is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, express or implied.
-# See the License for the specific language governing permissions and limitations under the License.
 import ast
 import datetime
 import json
-import os
 import time
 from collections import defaultdict
-from typing import List
 
 import boto3
-import untangle
-from framework.metrics_publisher import Metric, MetricsPublisher
-from junitparser import JUnitXml
+import pandas as pd
+import pytest
 
-from pcluster.constants import SUPPORTED_OSES
-
-
-def generate_cw_report(test_results_dir, namespace, aws_region, timestamp_day_start=False, start_timestamp=None):
-    """
-    Publish tests results to CloudWatch
-    :param test_results_dir: dir containing the tests outputs.
-    :param namespace: namespace for the CW metric.
-    :param aws_region: region where to push the metric.
-    :param timestamp_day_start: timestamp of the CW metric equal to the start of the current day (midnight).
-    :param start_timestamp: timestamp value to use instead of generating one
-    """
-    test_report_file = os.path.join(test_results_dir, "test_report.xml")
-    if not os.path.isfile(test_report_file):
-        generate_junitxml_merged_report(test_results_dir)
-    report = generate_json_report(test_results_dir=test_results_dir, save_to_file=False)
-    metric_pub = MetricsPublisher(region=aws_region)
-
-    if start_timestamp is not None:
-        timestamp = datetime.datetime.fromtimestamp(start_timestamp)
-    elif timestamp_day_start:
-        timestamp = datetime.datetime.combine(datetime.datetime.now(datetime.timezone.utc), datetime.time())
-    else:
-        timestamp = datetime.datetime.now(datetime.timezone.utc)
-    for category, dictionary in report.items():
-        if category == "all":
-            _put_metrics(metric_pub, namespace, dictionary, [], timestamp)
-        else:
-            for dimension, metrics in dictionary.items():
-                dimensions = [{"Name": category, "Value": dimension}]
-                _put_metrics(metric_pub, namespace, metrics, dimensions, timestamp)
+from cli.build.lib.pcluster.constants import SUPPORTED_OSES
+from pcluster.aws.common import AWSClientError
+from pcluster.validators.s3_validators import S3BucketRegionValidator, S3BucketUriValidator, UrlValidator
+from tests.pcluster.validators.utils import assert_failure_messages
 
 
-def generate_junitxml_merged_report(test_results_dir):
-    """
-    Merge all junitxml generated reports in a single one.
-    :param test_results_dir: output dir containing the junitxml reports to merge.
-    """
-    merged_xml = JUnitXml()
-    for dir, _, files in os.walk(test_results_dir):
-        for file in files:
-            if file.endswith("results.xml"):
-                merged_xml += JUnitXml.fromfile(os.path.join(dir, file))
-
-    merged_xml.write("{0}/test_report.xml".format(test_results_dir), pretty=True)
-
-
-def generate_json_report(test_results_dir, save_to_file=True):
-    """
-    Generate a json report containing a summary of the tests results with details
-    for each dimension.
-    :param test_results_dir: dir containing the tests outputs.
-    :param save_to_file:  True to save to file
-    :return: a dictionary containing the computed report.
-    """
-    test_report_file = os.path.join(test_results_dir, "test_report.xml")
-    if not os.path.isfile(test_report_file):
-        generate_junitxml_merged_report(test_results_dir)
-
-    result_to_label_mapping = {"skipped": "skipped", "failure": "failures", "error": "errors"}
-    results = {"all": _empty_results_dict()}
-    xml = untangle.parse(test_report_file)
-    for testsuite in xml.testsuites.children:
-        for testcase in testsuite.children:
-            label = "succeeded"
-            for key, value in result_to_label_mapping.items():
-                if hasattr(testcase, key):
-                    label = value
-                    break
-            results["all"][label] += 1
-            results["all"]["total"] += 1
-
-            if hasattr(testcase, "properties"):
-                for property in testcase.properties.children:
-                    if property["name"] not in ["region", "os", "instance", "scheduler", "feature"]:
-                        continue
-                    _record_result(results, property["name"], property["value"], label)
-
-    if save_to_file:
-        with open("{0}/test_report.json".format(test_results_dir), "w", encoding="utf-8") as out_f:
-            out_f.write(json.dumps(results, indent=4))
-
-    return results
-
-
-def _record_result(results_dict, dimension, dimension_value, label):
-    if dimension not in results_dict:
-        results_dict[dimension] = {}
-    if dimension_value not in results_dict[dimension]:
-        results_dict[dimension].update({dimension_value: _empty_results_dict()})
-    results_dict[dimension][dimension_value][label] += 1
-    results_dict[dimension][dimension_value]["total"] += 1
-
-
-def _empty_results_dict():
-    return {"total": 0, "skipped": 0, "failures": 0, "errors": 0, "succeeded": 0}
-
-
-def _put_metrics(
-    metric_publisher: MetricsPublisher,
-    namespace: str,
-    metrics: dict[str, int],
-    dimensions: List[dict[str, str]],
-    timestamp,
-):
-    # CloudWatch PutMetric API has a TPS of 150. Setting a rate of 60 metrics per second
-    put_metric_sleep_interval = 1.0 / 60
-    for key, value in metrics.items():
-        metric_publisher.publish_metrics_to_cloudwatch(
-            namespace,
-            [Metric(key, value, "Count", dimensions)],
-        )
-        time.sleep(put_metric_sleep_interval)
-
-    failures_errors = metrics["failures"] + metrics["errors"]
-    failure_rate = float(failures_errors) / metrics["total"] * 100 if metrics["total"] > 0 else 0
-    additional_metrics = [
-        {"name": "failures_errors", "value": failures_errors, "unit": "Count"},
-        {"name": "failure_rate", "value": failure_rate, "unit": "Percent"},
-    ]
-    for item in additional_metrics:
-        metric_publisher.publish_metrics_to_cloudwatch(
-            namespace,
-            [Metric(item["name"], item["value"], item["unit"], dimensions, timestamp)],
-        )
-        time.sleep(put_metric_sleep_interval)
-
-
-def generate_launch_time_report(reports_output_dir):
+def test_url_validator():
     dynamodb_client = boto3.client("dynamodb", region_name="us-east-1")
     current_time = int(time.time())
     one_year_ago = current_time - (365 * 24 * 60 * 60)
@@ -195,9 +59,8 @@ def generate_launch_time_report(reports_output_dir):
         if not last_evaluated_key:
             break
     all_items.sort(key=lambda x: x["call_start_time"]["N"], reverse=True)
+    result = defaultdict(dict)
     for category_name in ["os", "name"]:
-        # Analyze the data by os and by name.
-        # Therefore, we can see which os is taking long, or which test is taking long.
         category_name_processing = None
         if category_name == "name":
             category_name_processing = _remove_os_from_string
@@ -213,17 +76,94 @@ def generate_launch_time_report(reports_output_dir):
                 statistics_processing = max
             else:
                 statistics_processing = min
-            result = _get_statistics_by_category(
+            result[statistics_name][category_name] = _get_statistics_by_category(
                 all_items,
                 category_name,
                 statistics_name,
                 category_name_processing=category_name_processing,
                 statistics_processing=statistics_processing,
             )
-            create_report(result, statistics_name, category_name, reports_output_dir)
+    print(all_items)
 
 
-def generate_performance_report(reports_output_dir):
+def _get_failing_rate(all_items, timestamp, time_window):
+    failing_rate = 0
+    item_count = 0
+    for item in all_items:
+        if timestamp <= float(item["call_start_time"]["N"]) <= timestamp + time_window:
+            # Filter result only from 10pm to 11am
+            hour = datetime.datetime.fromtimestamp(float(item["call_start_time"]["N"])).hour
+            if hour >= 22 or hour <= 11:
+                item_count += 1
+                if item["call_status"]["S"] != "passed":
+                    failing_rate += 1
+    return failing_rate / item_count
+
+
+def test_failing_rate():
+    dynamodb_client = boto3.client("dynamodb", region_name="us-east-1")
+    current_time = int(time.time())
+    analysis_start_time = current_time - (450 * 24 * 60 * 60)
+
+    filter_expression = "#call_start_time >= :analysis_start_time"
+    expression_attribute_values = {":analysis_start_time": {"N": str(analysis_start_time)}}
+    all_items = []
+    last_evaluated_key = None
+    while True:
+        projection_expression = (
+            "#status, #avg_launch, #max_launch, #min_launch, #creation_time, #name, #os, #start_time"
+        )
+        expression_attribute_names = {
+            "#call_start_time": "call_start_time",
+            "#status": "call_status",
+            "#avg_launch": "compute_average_launch_time",
+            "#max_launch": "compute_max_launch_time",
+            "#min_launch": "compute_min_launch_time",
+            "#creation_time": "cluster_creation_time",
+            "#name": "name",
+            "#os": "os",
+            "#start_time": "call_start_time",
+        }
+        # Parameters for the scan operation
+        scan_params = {
+            "TableName": "ParallelCluster-IntegTest-Metadata",
+            "ProjectionExpression": projection_expression,
+            "FilterExpression": filter_expression,
+            "ExpressionAttributeNames": expression_attribute_names,
+            "ExpressionAttributeValues": expression_attribute_values,
+        }
+
+        # Add ExclusiveStartKey if we're not on the first iteration
+        if last_evaluated_key:
+            scan_params["ExclusiveStartKey"] = last_evaluated_key
+
+        response = dynamodb_client.scan(**scan_params)
+        all_items.extend(response.get("Items", []))
+
+        # Check if there are more items to fetch
+        last_evaluated_key = response.get("LastEvaluatedKey")
+        if not last_evaluated_key:
+            break
+    all_items.sort(key=lambda x: x["call_start_time"]["N"], reverse=True)
+    result = []
+    timestamps = []
+
+    timestamp_pointer = analysis_start_time
+    time_window = 3 * 24 * 60 * 60
+    while timestamp_pointer < current_time:
+        timestamps.append(timestamp_pointer)
+        result.append(_get_failing_rate(all_items, timestamp_pointer, time_window))
+        timestamp_pointer += time_window
+    x_values = [datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d") for ts in timestamps]
+    import matplotlib.pyplot as plt
+
+    plt.figure(figsize=(24, 12))
+    plt.plot(x_values, result)
+    plt.show()
+    print(timestamps)
+
+
+def test_performance_validator():
     dynamodb_client = boto3.client("dynamodb", region_name="us-east-1")
     current_time = int(time.time())
     one_year_ago = current_time - (365 * 24 * 60 * 60)
@@ -267,28 +207,8 @@ def generate_performance_report(reports_output_dir):
         items_by_name[item["name"]["S"]].append(item)
     result = defaultdict(dict)
     for name, items in items_by_name.items():
-        result[name] = _get_statistics_by_node_num(items, name, reports_output_dir)
-
-
-def _get_statistics_by_node_num(all_items, name, reports_output_dir):
-    result = {}
-    for item in all_items:
-        this_result = ast.literal_eval(item["result"]["S"])
-        for node_num, performance in this_result:
-            if node_num not in result:
-                result[node_num] = {}
-            os = item["os"]["S"]
-            os_time_key = f"{os}-time"
-            if os not in result[node_num]:
-                result[node_num][os] = []
-                result[node_num][os_time_key] = []
-            result[node_num][os].append(float(performance))
-            result[node_num][os_time_key].append(
-                datetime.datetime.fromtimestamp(int(item["timestamp"]["N"])).strftime("%Y-%m-%d %H:%M:%S")
-            )
-    for node_num, node_num_result in result.items():
-        create_report(node_num_result, node_num, name, reports_output_dir)
-    return result
+        result[name] = _get_statistics_by_node_num(items, name)
+    print(all_items)
 
 
 def _mean(x):
@@ -342,8 +262,33 @@ def _get_statistics_by_category(
         if os_cluster_creation_times:
             more_data = True
         lastest_time = lastest_time - 24 * 60 * 60
+        print(lastest_time)
 
+    create_report(result, statistics_name, category_name)
     return result
+    # return sorted(result.items(), key=lambda x: x[1], reverse=True)
+
+
+def _get_statistics_by_node_num(all_items, name):
+    result = {}
+    for item in all_items:
+        this_result = ast.literal_eval(item["result"]["S"])
+        for node_num, performance in this_result:
+            if node_num not in result:
+                result[node_num] = {}
+            os = item["os"]["S"]
+            os_time_key = f"{os}-time"
+            if os not in result[node_num]:
+                result[node_num][os] = []
+                result[node_num][os_time_key] = []
+            result[node_num][os].append(float(performance))
+            result[node_num][os_time_key].append(
+                datetime.datetime.fromtimestamp(int(item["timestamp"]["N"])).strftime("%Y-%m-%d %H:%M:%S")
+            )
+    for node_num, node_num_result in result.items():
+        create_report(node_num_result, node_num, name)
+    return result
+    # return sorted(result.items(), key=lambda x: x[1], reverse=True)
 
 
 import matplotlib.pyplot as plt
@@ -381,9 +326,9 @@ def plot_statistics(result, statistics_name, category_name):
 import pandas as pd
 
 
-def create_excel_files(result, statistics_name, category_name, reports_output_dir):
+def create_excel_files(result, statistics_name, category_name):
     # Collect and sort all unique time points
-    filename = os.path.join(reports_output_dir, f"{category_name}_{statistics_name}_statistics.xlsx")
+    filename = f"{category_name}_{statistics_name}_statistics.xlsx"
     print(f"Creating Excel file: {filename}...")
     all_times = set()
     for category, values in result.items():
@@ -398,8 +343,8 @@ def create_excel_files(result, statistics_name, category_name, reports_output_di
         if "-time" in category:
             continue
         x_values = result[f"{category}-time"]
-        # Create series and aggregate duplicates by taking the mean
-        category_series = pd.Series(index=x_values, data=values).groupby(level=0).mean()
+        # Create series aligned with sorted times
+        category_series = pd.Series(index=x_values, data=values)
         df_data[category] = category_series.reindex(sorted_times)
 
     df = pd.DataFrame(df_data)
@@ -417,8 +362,38 @@ def _get_launch_time(logs, instance_id):
             return log["timestamp"]
 
 
-def create_report(result, statistics_name, category_name, reports_output_dir, create_graphs=False, create_excel=True):
+def create_report(result, statistics_name, category_name, create_graphs=True, create_excel=True):
     if create_excel:
-        create_excel_files(result, statistics_name, category_name, reports_output_dir)
+        create_excel_files(result, statistics_name, category_name)
     if create_graphs:
         plot_statistics(result, statistics_name, category_name)
+
+
+@pytest.mark.parametrize(
+    "url, expected_message",
+    [
+        ("s3://test/test1/test2", None),
+        ("http://test/test.json", "is not a valid S3 URI"),
+    ],
+)
+def test_s3_bucket_uri_validator(mocker, url, expected_message, aws_api_mock):
+    aws_api_mock.s3.head_bucket.return_value = True
+    actual_failures = S3BucketUriValidator().execute(url=url)
+    assert_failure_messages(actual_failures, expected_message)
+    if url.startswith("s3://"):
+        aws_api_mock.s3.head_bucket.assert_called()
+
+
+@pytest.mark.parametrize(
+    "bucket, bucket_region, cluster_region, expected_message",
+    [
+        ("bucket", "us-east-1", "us-east-1", None),
+        ("bucket", "us-west-1", "us-west-1", None),
+        ("bucket", "eu-west-1", "us-east-1", "cannot be used because it is not in the same region of the cluster."),
+    ],
+)
+def test_s3_bucket_region_validator(mocker, bucket, bucket_region, cluster_region, expected_message, aws_api_mock):
+    aws_api_mock.s3.get_bucket_region.return_value = bucket_region
+    actual_failures = S3BucketRegionValidator().execute(bucket=bucket, region=cluster_region)
+    assert_failure_messages(actual_failures, expected_message)
+    aws_api_mock.s3.get_bucket_region.assert_called_with(bucket)

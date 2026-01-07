@@ -27,7 +27,13 @@ from conftest_networking import unmarshal_az_override
 from framework.tests_configuration.config_renderer import dump_rendered_config_file, read_config_file
 from framework.tests_configuration.config_utils import get_all_regions
 from framework.tests_configuration.config_validator import assert_valid_config
-from reports_generator import generate_cw_report, generate_json_report, generate_junitxml_merged_report
+from reports_generator import (
+    generate_cw_report,
+    generate_json_report,
+    generate_junitxml_merged_report,
+    generate_launch_time_report,
+    generate_performance_report,
+)
 from retrying import retry
 from utils import InstanceTypesData
 
@@ -922,6 +928,8 @@ def main():
     if "json" in args.reports:
         logger.info("Generating tests report")
         generate_json_report(reports_output_dir)
+        generate_launch_time_report(reports_output_dir)
+        generate_performance_report(reports_output_dir)
 
     if "cw" in args.reports:
         logger.info("Publishing CloudWatch metrics")
