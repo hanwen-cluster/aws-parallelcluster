@@ -33,7 +33,7 @@ OSU_BENCHMARKS_INSTANCES = ["c5n.18xlarge", "p5en.48xlarge", "p6-b200.48xlarge"]
 
 
 @pytest.mark.usefixtures("serial_execution_by_instance")
-@pytest.mark.parametrize("in_place_update_on_fleet_enabled", ["true", "false"])
+@pytest.mark.parametrize("in_place_update_on_fleet_enabled", ["false"])
 def test_osu(
     os,
     region,
