@@ -914,11 +914,6 @@ def main():
 
     _make_logging_dirs(args.output_dir)
 
-    if args.sequential:
-        _run_sequential(args)
-    else:
-        _run_parallel(args)
-
     logger.info("All tests completed!")
 
     reports_output_dir = "{base_dir}/{out_dir}".format(base_dir=args.output_dir, out_dir=OUT_DIR)
@@ -929,9 +924,7 @@ def main():
         logger.info("Generating tests report")
         generate_json_report(reports_output_dir)
         today_number = (datetime.date.today() - datetime.date(2020, 1, 1)).days
-        if today_number % 5 == 0:
-            # Launch time report is generated once every 5 days
-            generate_launch_time_report(reports_output_dir)
+        generate_launch_time_report(reports_output_dir)
         generate_performance_report(reports_output_dir)
 
     if "cw" in args.reports:
