@@ -921,11 +921,6 @@ def main():
 
     _make_logging_dirs(args.output_dir)
 
-    if args.sequential:
-        _run_sequential(args)
-    else:
-        _run_parallel(args)
-
     logger.info("All tests completed!")
 
     reports_output_dir = "{base_dir}/{out_dir}".format(base_dir=args.output_dir, out_dir=OUT_DIR)
