@@ -148,6 +148,35 @@ def unmarshal_az_override(az_override):
     return az_override
 
 
+DLAMI_PREFIX = "DLAMI_"
+
+
+def unmarshal_os_params(argvalues, argnames):
+    """
+    Extract ami_type from os values with DLAMI- prefix.
+
+    E.g. "DLAMI-ubuntu2204" -> os="ubuntu2204", ami_type="DLAMI"
+    """
+    if "os" not in argnames:
+        return argvalues, argnames
+
+    os_index = argnames.index("os")
+    unmarshalled = []
+    for params in argvalues:
+        param_list = list(params)
+        os_value = param_list[os_index]
+
+        if os_value and os_value.startswith(DLAMI_PREFIX):
+            param_list[os_index] = os_value[len(DLAMI_PREFIX):]  # strip prefix
+            param_list.append("DLAMI")
+        else:
+            param_list.append("official")
+
+        unmarshalled.append(tuple(param_list))
+
+    return unmarshalled, argnames + ["ami_type"]
+
+
 def unmarshal_az_params(argvalues, argnames):
     """
     Given the list of tuple parameters defining the configured test dimensions, when an az-override is specified
