@@ -859,15 +859,16 @@ def inject_additional_config_settings(  # noqa C901
         elif dict_has_nested_key(config_content, ("HeadNode", "Networking", "ElasticIp")):
             dict_add_nested_key(config_content, "true", ("HeadNode", "Networking", "ElasticIp"))
 
-    additional_policies = [
-        {"Policy": f"arn:{get_arn_partition(region)}:iam::aws:policy/AmazonSSMManagedInstanceCore"},
-    ]
-    _inject_additional_iam_policies_for_nodes(
-        config_content,
-        scheduler,
-        node_types=[NodeType.LOGIN_NODES, NodeType.HEAD_NODE, NodeType.COMPUTE_NODES],
-        policies=additional_policies,
-    )
+    if "test_osu" not in request.node.nodeid:
+        additional_policies = [
+            {"Policy": f"arn:{get_arn_partition(region)}:iam::aws:policy/AmazonSSMManagedInstanceCore"},
+        ]
+        _inject_additional_iam_policies_for_nodes(
+            config_content,
+            scheduler,
+            node_types=[NodeType.LOGIN_NODES, NodeType.HEAD_NODE, NodeType.COMPUTE_NODES],
+            policies=additional_policies,
+        )
 
     with open(cluster_config, "w", encoding="utf-8") as conf_file:
         yaml.dump(config_content, conf_file)
