@@ -19,7 +19,9 @@ from typing import List
 
 import boto3
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
+import ruptures as rpt
 import untangle
 from framework.metrics_publisher import Metric, MetricsPublisher
 from junitparser import JUnitXml
@@ -379,6 +381,9 @@ def generate_performance_summary(all_benchmark_data, os_comparison_data, reports
         # OS Comparison sheet
         _write_os_comparison_sheet(writer, os_comparison_data)
 
+        # Step Change Detection sheet
+        _write_step_change_sheet(writer, os_comparison_data)
+
     print(f"Performance summary saved: {filename}")
 
 
@@ -475,6 +480,117 @@ def _write_os_comparison_sheet(writer, os_comparison_data):  # noqa: C901
                 spread_cell.fill = PatternFill(start_color="FF6B6B", end_color="FF6B6B", fill_type="solid")
             elif spread_val > 25:
                 spread_cell.fill = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
+
+
+def _detect_changepoints(timestamps, values, pen=1, min_size=3, min_pct_change=5):
+    """
+    Run PELT changepoint detection on a time series.
+
+    Returns list of dicts with keys: changepoint_time, before_mean, after_mean, pct_change, direction.
+    Filters out changes below min_pct_change threshold.
+    """
+    valid = [(t, v) for t, v in zip(timestamps, values) if v is not None]
+    if len(valid) < 4:
+        return []
+
+    ts_valid, vals_valid = zip(*valid)
+    signal = np.array(vals_valid).reshape(-1, 1)
+
+    signal_std = np.std(signal)
+    if signal_std == 0:
+        return []
+
+    algo = rpt.Pelt(model="l2", min_size=min_size).fit(signal)
+    n = len(signal)
+    penalty = pen * signal_std * np.log(n)
+    bkps = algo.predict(pen=penalty)
+
+    results = []
+    prev = 0
+    for i, bp in enumerate(bkps[:-1]):
+        before = signal[prev:bp].flatten()
+        after_end = bkps[i + 1] if i + 1 < len(bkps) else len(signal)
+        after = signal[bp:after_end].flatten()
+        if len(before) == 0 or len(after) == 0:
+            continue
+        before_mean = float(np.mean(before))
+        after_mean = float(np.mean(after))
+        if before_mean == 0:
+            continue
+        pct = ((after_mean - before_mean) / before_mean) * 100
+        if abs(pct) < min_pct_change:
+            prev = bp
+            continue
+        cp_time = ts_valid[bp] if bp < len(ts_valid) else ts_valid[-1]
+        direction = "IMPROVED" if pct < 0 else "REGRESSED"
+        results.append({
+            "changepoint_time": cp_time,
+            "before_mean": before_mean,
+            "after_mean": after_mean,
+            "pct_change": pct,
+            "direction": direction,
+        })
+        prev = bp
+
+    return results
+
+
+def _write_step_change_sheet(writer, os_comparison_data):  # noqa: C901
+    """Write Step Change Detection sheet using PELT algorithm on per-benchmark per-OS time series."""
+    rows = []
+    for benchmark_key, os_dict in os_comparison_data.items():
+        for os_key, os_data in os_dict.items():
+            timestamps = os_data["timestamps"]
+            values = os_data["values"]
+            changepoints = _detect_changepoints(timestamps, values)
+            for cp in changepoints:
+                rows.append({
+                    "Benchmark": benchmark_key,
+                    "OS": os_key,
+                    "Changepoint Date": datetime.datetime.fromtimestamp(cp["changepoint_time"]).strftime(
+                        "%Y-%m-%d %H:%M"
+                    ),
+                    "Before Mean": round(cp["before_mean"], 1),
+                    "After Mean": round(cp["after_mean"], 1),
+                    "Change %": cp["pct_change"],
+                    "Direction": cp["direction"],
+                })
+
+    if not rows:
+        return
+
+    # Sort by changepoint date (primary), then benchmark (secondary)
+    rows.sort(key=lambda r: (r["Changepoint Date"], r["Benchmark"]))
+
+    columns = ["Benchmark", "OS", "Changepoint Date", "Before Mean", "After Mean", "Change %", "Direction"]
+    df = pd.DataFrame(rows, columns=columns)
+    df.to_excel(writer, index=False, sheet_name="Step Change")
+    worksheet = writer.sheets["Step Change"]
+
+    # Color code the Change % column (column F = index 6)
+    change_col = 6
+    for row_idx in range(2, len(rows) + 2):
+        benchmark_name = worksheet.cell(row=row_idx, column=1).value
+        is_higher_better = "osu_bibw" in benchmark_name if benchmark_name else False
+
+        cell = worksheet.cell(row=row_idx, column=change_col)
+        if cell.value is not None and isinstance(cell.value, (int, float)):
+            val = cell.value
+            cell.number_format = "+0.0%;-0.0%;0.0%"
+            cell.value = val / 100
+
+            is_regression = (val > 0 and not is_higher_better) or (val < 0 and is_higher_better)
+
+            if is_regression:
+                if abs(val) > 25:
+                    cell.fill = PatternFill(start_color="FF6B6B", end_color="FF6B6B", fill_type="solid")
+                elif abs(val) > 10:
+                    cell.fill = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
+            else:
+                if abs(val) > 25:
+                    cell.fill = PatternFill(start_color="32CD32", end_color="32CD32", fill_type="solid")
+                elif abs(val) > 10:
+                    cell.fill = PatternFill(start_color="90EE90", end_color="90EE90", fill_type="solid")
 
 
 def _append_performance_data(target_dict, os_key, performance, timestamp):
