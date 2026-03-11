@@ -201,8 +201,7 @@ phases:
 
                 if [[ ${!OS} == "rhel8" ]] || [[ ${!OS} == "rocky8" ]] || [[ ${!OS} == "rhel9" ]] || [[ ${!OS} == "rocky9" ]] || [[ ${!OS} == "alinux2023" ]] ; then
                   # package-cleanup has changed in RHEL8 and it works differently https://access.redhat.com/solutions/1227
-                  # Keep only the latest kernel to avoid DKMS building modules for multiple kernels in the second stage
-                  yum remove -y $(yum repoquery --installonly --latest-limit=-1 -q)
+                  yum remove -y $(yum repoquery --installonly --latest-limit=-2 -q)
                 else
                   package-cleanup -y --oldkernels --count=1
                 fi
@@ -215,12 +214,6 @@ phases:
                   DEBIAN_FRONTEND=noninteractive apt-get -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" --with-new-pkgs upgrade
                 fi
                 apt-get --purge autoremove -y
-                # Remove old kernel packages to avoid DKMS building modules for multiple kernels in the second stage
-                CURRENT_KERNEL=$(uname -r)
-                OLD_KERNEL_PKGS=$(dpkg -l 'linux-*' 2>/dev/null | awk '/^ii/ && /linux-(image|headers|modules)/ && !/'"${!CURRENT_KERNEL}"'/ && !/linux-(image|headers|modules)-(aws|generic)/ {print $2}')
-                if [ -n "${!OLD_KERNEL_PKGS}" ]; then
-                  apt-get purge -y ${!OLD_KERNEL_PKGS}
-                fi
               fi
       - name: RebootStep
         action: Reboot
@@ -228,6 +221,31 @@ phases:
         maxAttempts: 2
         inputs:
           delaySeconds: 10
+
+      # Remove old kernels after reboot so DKMS only builds modules for the running kernel in the second stage.
+      # Must run after reboot so uname -r returns the new kernel version.
+      - name: RemoveOldKernels
+        action: ExecuteBash
+        inputs:
+          commands:
+            - |
+              set -x
+              OS='{{ build.OperatingSystemName.outputs.stdout }}'
+              PLATFORM='{{ build.PlatformName.outputs.stdout }}'
+
+              if [[ ${!PLATFORM} == RHEL ]]; then
+                if [[ ${!OS} == "rhel8" ]] || [[ ${!OS} == "rocky8" ]] || [[ ${!OS} == "rhel9" ]] || [[ ${!OS} == "rocky9" ]] || [[ ${!OS} == "alinux2023" ]] ; then
+                  yum remove -y $(yum repoquery --installonly --latest-limit=-1 -q)
+                else
+                  package-cleanup -y --oldkernels --count=1
+                fi
+              elif [[ ${!PLATFORM} == DEBIAN ]]; then
+                CURRENT_KERNEL=$(uname -r)
+                OLD_KERNEL_PKGS=$(dpkg -l 'linux-*' 2>/dev/null | awk '/^ii/ && /linux-(image|headers|modules)/ && !/'"${!CURRENT_KERNEL}"'/ && !/linux-(image|headers|modules)-(aws|generic)/ {print $2}')
+                if [ -n "${!OLD_KERNEL_PKGS}" ]; then
+                  apt-get purge -y ${!OLD_KERNEL_PKGS}
+                fi
+              fi
 
       - name: RemoveKernelPin
         action: ExecuteBash
