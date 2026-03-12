@@ -240,6 +240,10 @@ phases:
                   package-cleanup -y --oldkernels --count=1
                 fi
               elif [[ ${!PLATFORM} == DEBIAN ]]; then
+                # Mark versioned kernel packages as auto-installed so autoremove can clean them up.
+                # The running kernel is protected by apt, so only old kernels get removed.
+                dpkg -l 'linux-*' 2>/dev/null | awk '/^ii/ && $2 ~ /^linux-(image|headers|modules|tools)-[0-9]/ {print $2}' \
+                  | xargs -r apt-mark auto
                 apt-get --purge autoremove -y
               fi
 
