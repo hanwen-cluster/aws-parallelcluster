@@ -223,7 +223,7 @@ phases:
           delaySeconds: 10
 
       # Remove old kernels after reboot so DKMS only builds modules for the running kernel in the second stage.
-      # Must run after reboot so uname -r returns the new kernel version.
+      # Must run after reboot so the old kernel is no longer protected by the package manager.
       - name: RemoveOldKernels
         action: ExecuteBash
         inputs:
@@ -240,11 +240,7 @@ phases:
                   package-cleanup -y --oldkernels --count=1
                 fi
               elif [[ ${!PLATFORM} == DEBIAN ]]; then
-                CURRENT_KERNEL=$(uname -r)
-                OLD_KERNEL_PKGS=$(dpkg -l 'linux-*' 2>/dev/null | awk '/^ii/ && /linux-(image|headers|modules)/ && !/'"${!CURRENT_KERNEL}"'/ && !/linux-(image|headers|modules)-(aws|generic)/ {print $2}')
-                if [ -n "${!OLD_KERNEL_PKGS}" ]; then
-                  apt-get purge -y ${!OLD_KERNEL_PKGS}
-                fi
+                apt-get --purge autoremove -y
               fi
 
       - name: RemoveKernelPin
