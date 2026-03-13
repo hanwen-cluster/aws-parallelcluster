@@ -1,0 +1,51 @@
+Image:
+  Os: {{ os }}
+HeadNode:
+  InstanceType: {{ instance }}
+  Networking:
+    SubnetId: {{ public_subnet_id }}
+  Ssh:
+    KeyName: {{ key_name }}
+  Dcv:
+    Enabled: true  # This will trigger DCV tests
+  Imds:
+    Secured: {{ imds_secured }}
+Scheduling:
+  Scheduler: {{ scheduler }}
+  SlurmQueues:
+    - Name: gpu-queue
+      ComputeResources:
+        - Name: gpu-compute
+          Instances:
+            - InstanceType: p3.2xlarge  # This will trigger NCCL tests
+          MinCount: 0
+          MaxCount: 2
+          Efa:
+            Enabled: true  # This will trigger EFA tests
+      Networking:
+        SubnetIds:
+          - {{ private_subnet_id }}
+    - Name: cpu-queue  
+      ComputeResources:
+        - Name: cpu-compute
+          Instances:
+            - InstanceType: {{ instance }}
+          MinCount: 0
+          MaxCount: 4
+      Networking:
+        SubnetIds:
+          - {{ private_subnet_id }}
+SharedStorage:
+  - MountDir: /shared
+    Name: shared-ebs
+    StorageType: Ebs
+  - MountDir: /fsx
+    Name: fsx-lustre
+    StorageType: FsxLustre  # This will trigger FSx Lustre tests
+    FsxLustreSettings:
+      StorageCapacity: 1200
+      DeploymentType: SCRATCH_2
+Monitoring:
+  Logs:
+    CloudWatch:
+      Enabled: true
