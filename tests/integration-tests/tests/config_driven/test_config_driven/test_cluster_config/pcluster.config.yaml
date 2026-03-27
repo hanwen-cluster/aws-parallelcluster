@@ -11,12 +11,12 @@ HeadNode:
 Scheduling:
   Scheduler: {{ scheduler }}
   SlurmQueues:
-    - Name: compute
+    - Name: queue1
       Networking:
         SubnetIds:
           - {{ private_subnet_id }}
       ComputeResources:
-        - Name: default
+        - Name: q1cr1
           InstanceType: {{ instance }}
           MaxCount: 2
           MinCount: 1
