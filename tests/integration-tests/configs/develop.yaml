@@ -39,16 +39,10 @@ test-suites:
   cloudwatch_logging:
     test_cloudwatch_logging.py::test_cloudwatch_logging:
       dimensions:
-        # 1) run the test for all the schedulers with alinux2
         - regions: ["cn-northwest-1"]
           instances: {{ common.INSTANCES_DEFAULT_X86 }}
           oss: [{{ OS_X86_0 }}]
-          schedulers: {{ common.SCHEDULERS_TRAD }}
-        - regions: ["us-gov-east-1"]
-          instances: {{ common.INSTANCES_DEFAULT_X86 }}
-          oss: [{{ BATCH_OS_X86_0 }}]
-          schedulers: ["awsbatch"]
-        # 2) run the test for all OSes with slurm
+          schedulers: ["slurm"]
         - regions: ["ap-southeast-7"]
           instances: {{ common.INSTANCES_DEFAULT_ARM }}
           oss: [{{ OS_ARM_0 }}]
@@ -173,7 +167,7 @@ test-suites:
       dimensions:
         - regions: ["ca-central-1"]
           instances: {{ common.INSTANCES_DEFAULT_X86 }}
-          oss: ["alinux2"]
+          oss: ["alinux2023"]
     test_createami.py::test_build_image_no_internet:
       dimensions:
         - regions: ["us-east-1"]

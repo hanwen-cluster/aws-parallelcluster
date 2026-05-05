@@ -116,7 +116,7 @@ def test_get_supported_architectures(mocker, instance_type, supported_architectu
 @pytest.mark.parametrize(
     "os_part, expected_os",
     [
-        ("amzn2-hvm", "alinux2"),
+        ("amzn2023-hvm", "alinux2023"),
         ("ubuntu-2204-lts-hvm", "ubuntu2204"),
         ("nonexistant-hvm", "linux"),
         ("nonexistant", "linux"),
@@ -167,7 +167,7 @@ def test_extract_os_from_official_image_name(os_part, expected_os):
             id="test with no filter",
         ),
         pytest.param(
-            "alinux2",
+            "alinux2023",
             None,
             {
                 "Images": [
@@ -206,7 +206,7 @@ def test_extract_os_from_official_image_name(os_part, expected_os):
             id="test with architecture",
         ),
         pytest.param(
-            "alinux2",
+            "alinux2023",
             "x86_64",
             {
                 "Images": [
@@ -221,7 +221,7 @@ def test_extract_os_from_official_image_name(os_part, expected_os):
             None,
             id="test with os and architecture",
         ),
-        pytest.param("alinux2", "arm64", Exception("error message"), None, "error message", id="test with boto3 error"),
+        pytest.param("alinux2023", "arm64", Exception("error message"), None, "error message", id="test with boto3 error"),
     ],
 )
 def test_get_official_images(boto3_stubber, os, architecture, boto3_response, expected_response, error_message):
@@ -260,30 +260,30 @@ def test_get_official_images(boto3_stubber, os, architecture, boto3_response, ex
     "os, architecture, filters, boto3_response, error_message",
     [
         (
-            "alinux2",
+            "alinux2023",
             "arm64",
             None,
             {"Images": [{"ImageId": "ami-00e87074e52e6", "CreationDate": "2018-11-09T01:21:00.000Z"}]},
             None,
         ),
         (
-            "alinux2",
+            "alinux2023",
             "x86_64",
             AmiSearchFilters(owner="self"),
             {"Images": [{"ImageId": "ami-00e87074e52e6", "CreationDate": "2018-11-09T01:21:00.000Z"}]},
             None,
         ),
         (
-            "alinux2",
+            "alinux2023",
             "x86_64",
             AmiSearchFilters(owner="self", tags=[Tag("key1", "value1"), Tag("key2", "value2")]),
             {"Images": [{"ImageId": "ami-00e87074e52e6", "CreationDate": "2018-11-09T01:21:00.000Z"}]},
             None,
         ),
-        ("alinux2", "arm64", None, Exception("error message"), "error message"),
-        ("alinux2", "arm64", None, {"Images": []}, "Cannot find official ParallelCluster AMI"),
+        ("alinux2023", "arm64", None, Exception("error message"), "error message"),
+        ("alinux2023", "arm64", None, {"Images": []}, "Cannot find official ParallelCluster AMI"),
         (
-            "alinux2",
+            "alinux2023",
             "arm64",
             None,
             {
@@ -400,7 +400,7 @@ def test_get_official_image_id_with_deprecation(boto3_stubber, boto3_response, e
     ]
     boto3_stubber("ec2", mocked_requests)
 
-    ami_id = Ec2Client().get_official_image_id("alinux2", "arm64", None)
+    ami_id = Ec2Client().get_official_image_id("alinux2023", "arm64", None)
     assert_that(ami_id).is_equal_to(expected_ami_id)
 
 

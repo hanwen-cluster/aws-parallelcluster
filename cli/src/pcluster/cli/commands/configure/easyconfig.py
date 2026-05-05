@@ -147,7 +147,7 @@ def configure(args):  # noqa: C901
     scheduler = prompt_iterable("Scheduler", SUPPORTED_SCHEDULERS)
 
     if scheduler == "awsbatch":
-        base_os = "alinux2"
+        base_os = "alinux2023"
     else:
         base_os = prompt_iterable("Operating System", get_supported_os_for_scheduler(scheduler))
 

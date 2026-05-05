@@ -873,7 +873,7 @@ class TestCluster:
 
 OLD_CONFIGURATION = """
 Image:
-  Os: alinux2
+  Os: alinux2023
   CustomAmi: ami-08cf50b131bcd4db2
 HeadNode:
   InstanceType: t3.micro

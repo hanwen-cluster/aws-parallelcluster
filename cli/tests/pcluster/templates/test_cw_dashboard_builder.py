@@ -28,11 +28,11 @@ from tests.pcluster.models.dummy_s3_bucket import dummy_cluster_bucket, mock_buc
     "config_file_name, region",
     [
         ("rhel8.slurm.full.yaml", "us-east-1"),
-        ("alinux2.slurm.conditional_vol.yaml", "us-east-1"),
+        ("alinux2023.slurm.conditional_vol.yaml", "us-east-1"),
         ("ubuntu24.slurm.simple.yaml", "us-east-1"),
-        ("alinux2.batch.no_head_node_log.yaml", "us-east-1"),
+        ("alinux2023.batch.no_head_node_log.yaml", "us-east-1"),
         ("ubuntu24.slurm.no_dashboard.yaml", "us-east-1"),
-        ("alinux2.batch.head_node_log.yaml", "us-east-1"),
+        ("alinux2023.batch.head_node_log.yaml", "us-east-1"),
         ("ubuntu24.slurm.simple.yaml", "us-iso-WHATEVER"),
     ],
 )

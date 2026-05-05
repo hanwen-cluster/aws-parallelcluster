@@ -62,7 +62,7 @@ FAKE_IMAGEBUILDER_STACK_NAME = "pcluster1"
                     {"DeviceName": "/dev/sdb", "VirtualName": "ephemeral0"},
                     {"DeviceName": "/dev/sdc", "VirtualName": "ephemeral1"},
                 ],
-                "Description": "AWS ParallelCluster AMI for alinux2, kernel-4.14.203-156.332.amzn2.x86_64, "
+                "Description": "AWS ParallelCluster AMI for alinux2023, kernel-4.14.203-156.332.amzn2.x86_64, "
                 "lustre-client-2.10.8-5.amzn2.x86_64, nice-dcv-server-2020.2.9662-1.el7.x86_64, "
                 "slurm-20.02.4, nvidia-450.80.02",
                 "EnaSupport": True,
@@ -72,7 +72,7 @@ FAKE_IMAGEBUILDER_STACK_NAME = "pcluster1"
                 "RootDeviceType": "ebs",
                 "SriovNetSupport": "simple",
                 "Tags": [
-                    {"Key": "parallelcluster:os", "Value": "alinux2"},
+                    {"Key": "parallelcluster:os", "Value": "alinux2023"},
                     {"Key": "CreatedBy", "Value": "EC2 Image Builder"},
                     {"Key": "parallelcluster:dcv_server", "Value": "nice-dcv-server-2020.2.9662-1.el7.x86_64"},
                     {"Key": "parallelcluster:efa_profile", "Value": "efa-profile-1.1-1.amzn2.noarch"},
@@ -113,7 +113,7 @@ FAKE_IMAGEBUILDER_STACK_NAME = "pcluster1"
                 "version": get_installed_version(),
                 "pcluster_image_id": FAKE_IMAGEBUILDER_STACK_NAME,
                 "config_url": "s3://my_bucket/config_key",
-                "image_os": "alinux2",
+                "image_os": "alinux2023",
             },
         )
     ],

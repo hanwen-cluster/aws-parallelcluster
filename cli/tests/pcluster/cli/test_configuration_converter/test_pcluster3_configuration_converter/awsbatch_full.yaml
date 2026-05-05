@@ -53,7 +53,7 @@ HeadNode:
     KeyName: chenwanyi01
 Image:
   CustomAmi: ami-12345
-  Os: alinux2
+  Os: alinux2023
 Monitoring:
   Dashboards:
     CloudWatch:

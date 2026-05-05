@@ -122,7 +122,7 @@ def dummy_head_node(mocker):
 
 def dummy_slurm_cluster_config(mocker):
     """Generate dummy cluster."""
-    image = Image(os="alinux2")
+    image = Image(os="alinux2023")
     head_node = dummy_head_node(mocker)
     queue_iam = Iam(
         s3_access=[
@@ -173,7 +173,7 @@ def dummy_slurm_cluster_config(mocker):
 
 def dummy_awsbatch_cluster_config(mocker):
     """Generate dummy cluster."""
-    image = Image(os="alinux2")
+    image = Image(os="alinux2023")
     head_node = dummy_head_node(mocker)
     compute_resources = [
         AwsBatchComputeResource(name="dummy_compute_resource1", instance_types=["dummyc5.xlarge", "optimal"])

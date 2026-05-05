@@ -82,7 +82,7 @@ class TestCreateCluster:
 
     CONFIG = """
 Image:
-  Os: alinux2
+  Os: alinux2023
 HeadNode:
   InstanceType: t3.micro
   Networking:

@@ -24,17 +24,6 @@ test-suites:
           instances: {{ common.INSTANCES_DEFAULT_ARM }}
           oss: {{ common.OSS_COMMERCIAL_ARM }}
           schedulers: {{ common.SCHEDULERS_TRAD }}
-  schedulers:
-    test_awsbatch.py::test_awsbatch:
-      dimensions:
-        - regions: {{ NEW_REGION }}
-          instances: {{ common.INSTANCES_DEFAULT_X86 }}
-          oss: ["alinux2"]
-          schedulers: ["awsbatch"]
-        - regions: {{ NEW_REGION }}
-          instances: {{ common.INSTANCES_DEFAULT_ARM }}
-          oss: ["alinux2"]
-          schedulers: ["awsbatch"]
   cloudwatch_logging:
     test_cloudwatch_logging.py::test_cloudwatch_logging:
       dimensions:
@@ -61,7 +50,7 @@ test-suites:
       dimensions:
         - regions: {{ NEW_REGION }}
           instances: {{ common.INSTANCES_DEFAULT_X86 }}
-          oss: ["alinux2"]
+          oss: ["alinux2023"]
   monitoring:
     test_monitoring.py::test_monitoring:
       dimensions:
@@ -80,7 +69,7 @@ test-suites:
         # DCV om non GPU enabled instance
         - regions: {{ NEW_REGION }}
           instances: {{ common.INSTANCES_DEFAULT_X86 }}
-          oss: ["alinux2"]
+          oss: ["alinux2023"]
           schedulers: ["slurm"]
   dns:
     test_dns.py::test_hit_no_cluster_dns_mpi:
