@@ -123,7 +123,44 @@ phases:
               PLATFORM='{{ build.PlatformName.outputs.stdout }}'
 
               if [[ ${!PLATFORM} == RHEL ]]; then
-                yum -y install jq
+                # Disable dnf-makecache.timer (when present) so it cannot race
+                # with our package install and grab /var/lib/rpm/.rpm.lock.
+                # The timer runs hourly with a randomized 60-minute jitter on
+                # RHEL/Rocky and is one of the main sources of transient
+                # build-image failures.
+                systemctl disable --now dnf-makecache.timer dnf-makecache.service >/dev/null 2>&1 || true
+
+                # Wait up to 5 minutes for any in-flight rpm/dnf process to
+                # release the rpm transaction lock before we try to install.
+                for i in $(seq 1 60); do
+                  if ! fuser /var/lib/rpm/.rpm.lock >/dev/null 2>&1 \
+                     && ! fuser /var/cache/dnf/metadata_lock.pid >/dev/null 2>&1; then
+                    break
+                  fi
+                  echo "Waiting for rpm/dnf lock to be released ($i/60)..."
+                  sleep 5
+                done
+
+                # Install jq with retries: --refresh forces metadata pull from
+                # the current mirror; `dnf clean metadata` between attempts
+                # forces a different mirror to be picked next time. This
+                # mitigates "GPG check FAILED" / "Public key ... is not
+                # installed" / "No match for argument" errors caused by
+                # out-of-sync RHUI mirrors.
+                installed=false
+                for attempt in 1 2 3 4 5; do
+                  if yum -y install --refresh jq; then
+                    installed=true
+                    break
+                  fi
+                  echo "yum install jq failed on attempt ${!attempt}, refreshing metadata..."
+                  yum clean metadata || true
+                  sleep 10
+                done
+                if [[ ${!installed} != true ]]; then
+                  echo "Failed to install jq after 5 attempts. Failing build."
+                  exit {{ FailExitCode }}
+                fi
               elif [[ ${!PLATFORM} == DEBIAN ]]; then
                 apt-get -y install jq
               fi
