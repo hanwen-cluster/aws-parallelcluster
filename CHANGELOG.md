@@ -9,8 +9,7 @@ CHANGELOG
   consistent with the existing limit for `Database`. This prevents runtime failures caused by MySQL's table name length limit.
 - The CLI now requires the additional permission `tag:GetResources`.
 - Add support for Python 3.11, 3.12 in pcluster CLI
-- Reduce transient `pcluster build-image` failures on RHEL and Rocky during the `InstallPrerequisites` step by disabling the
-  `dnf-makecache.timer` to prevent rpm lock contention and by retrying `yum install jq` with metadata refresh on out-of-sync mirrors.
+- Further reduce transient build-image failures on RHEL and Rocky caused by out-of-sync repo mirrors by resetting metadata upon retry.
 
 **BUG FIXES**
 - Fix sporadic S3 bucket (with name parallelcluster-*-v1-do-not-delete) creation failure when multiple create-cluster commands are running simultaneously in the same region.
