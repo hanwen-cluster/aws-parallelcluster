@@ -66,7 +66,7 @@ OS_TO_REMARKABLE_AMI_NAME_OWNER_MAP = {
     # so that it will not conflict with pcluster build image. goodmorning
     "alinux2": {
         "name": "Deep Learning OSS Nvidia Driver AMI (Amazon Linux 2) Version 83.9 for ParallelCluster*",
-        # If you are running in your personal account, then you must have this patched AMI
+        # If you are rxunning in your personal account, then you must have this patched AMI
         "owners": ["self"],
     },
     "alinux2023": {
