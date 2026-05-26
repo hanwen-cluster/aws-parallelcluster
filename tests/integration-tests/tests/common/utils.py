@@ -63,7 +63,7 @@ OS_TO_OFFICIAL_AMI_NAME_OWNER_MAP = {
 # Remarkable AMIs are latest deep learning base AMI and FPGA developer AMI without pcluster infrastructure testtest
 OS_TO_REMARKABLE_AMI_NAME_OWNER_MAP = {
     # Using a patched DLAMI which has uninstalled openssl11-devel, openssl11-libs and openssl11-pkcs
-    # so that it will not conflict with pcluster build image.
+    # so that it will not conflict with pcluster build image. goodmorning
     "alinux2": {
         "name": "Deep Learning OSS Nvidia Driver AMI (Amazon Linux 2) Version 83.9 for ParallelCluster*",
         # If you are running in your personal account, then you must have this patched AMI

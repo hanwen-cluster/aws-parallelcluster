@@ -103,6 +103,7 @@ jobs:
           PR_AUTHOR: ${{ steps.pr-info.outputs.pr_author }}
           TARGET_BRANCHES: ${{ steps.pr-info.outputs.target_branches }}
         run: |
+          HAS_FAILURE=false
           for TARGET_BRANCH in ${TARGET_BRANCHES}; do
             CHERRY_PICK_BRANCH="cherry-pick/pr-${PR_NUMBER}-to-${TARGET_BRANCH}"
 
@@ -134,12 +135,19 @@ jobs:
                 --label "cherry-pick"
               echo "✅ Cherry-pick PR to ${TARGET_BRANCH} created successfully"
             else
-              # Comment on the original PR and fail the workflow
+              HAS_FAILURE=true
               gh pr comment "${PR_NUMBER}" --repo "${{ github.repository }}" \
                 --body "⚠️ Automated cherry-pick to \`${TARGET_BRANCH}\` failed due to merge conflicts.
 
           Please cherry-pick manually"
               echo "::error::Cherry-pick to ${TARGET_BRANCH} failed due to conflicts."
-              exit 1
             fi
+
+            # Clean up for next iteration
+            git checkout --detach 2>/dev/null || true
+            git branch -D "${CHERRY_PICK_BRANCH}" 2>/dev/null || true
           done
+
+          if [ "${HAS_FAILURE}" = "true" ]; then
+            exit 1
+          fi
