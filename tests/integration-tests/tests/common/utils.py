@@ -102,7 +102,7 @@ OS_TO_KERNEL4_AMI_NAME_OWNER_MAP = {
 
 # Get official pcluster AMIs or get from dev account
 PCLUSTER_AMI_OWNERS = ["amazon", "self"]
-# Pcluster AMIs are latest ParallelCluster official AMIs that align with cli version
+# Pcluster AMIs are latest ParallelCluster official AMIs that align with cli versionxxx
 OS_TO_PCLUSTER_AMI_NAME_OWNER_MAP = {
     "alinux2": {"name": "amzn2-hvm-*-*", "owners": PCLUSTER_AMI_OWNERS},
     "alinux2023": {"name": "amzn2023-hvm-*-*", "owners": PCLUSTER_AMI_OWNERS},
