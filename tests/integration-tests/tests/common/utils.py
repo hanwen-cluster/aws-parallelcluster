@@ -60,7 +60,7 @@ OS_TO_OFFICIAL_AMI_NAME_OWNER_MAP = {
     "rocky9": {"name": "Rocky-9-EC2-Base-9.*", "owners": ["792107900819"]},  # TODO add china and govcloud accounts
 }
 
-# Remarkable AMIs are latest deep learning base AMI and FPGA developer AMI without pcluster infrastructure
+# Remarkable AMIs are latest deep learning base AMI and FPGA developer AMI without pcluster infrastructure testtest
 OS_TO_REMARKABLE_AMI_NAME_OWNER_MAP = {
     # Using a patched DLAMI which has uninstalled openssl11-devel, openssl11-libs and openssl11-pkcs
     # so that it will not conflict with pcluster build image.
