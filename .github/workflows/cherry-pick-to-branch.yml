@@ -1,22 +1,31 @@
 name: Cherry-pick to branch
 
 on:
-  # Path 1: Label added to a merged PR — triggers immediately
+  # Path 1: Label added to an open PR — will cherry-pick when PR is merged
   # Path 2: PR merged while already carrying a cherry-pick:* label — triggers at merge time
+  # Path 3: Label added to an already-merged PR (fires as issues event) — triggers immediately
+  pull_request:
+    types: [labeled, closed]
   issues:
     types: [labeled]
-  pull_request:
-    types: [closed]
 
 jobs:
   cherry-pick:
+    # Run when:
+    # 1. A cherry-pick:* label is added to a PR (open or closed via issues event)
+    # 2. A PR with cherry-pick:* labels is merged
     if: >
+      (github.event_name == 'pull_request' &&
+       github.event.action == 'labeled' &&
+       startsWith(github.event.label.name, 'cherry-pick:') &&
+       github.event.pull_request.merged == true) ||
+      (github.event_name == 'pull_request' &&
+       github.event.action == 'closed' &&
+       github.event.pull_request.merged == true &&
+       contains(toJSON(github.event.pull_request.labels.*.name), 'cherry-pick:')) ||
       (github.event_name == 'issues' &&
        github.event.issue.pull_request &&
-       startsWith(github.event.label.name, 'cherry-pick:')) ||
-      (github.event_name == 'pull_request' &&
-       github.event.pull_request.merged == true &&
-       contains(toJSON(github.event.pull_request.labels.*.name), 'cherry-pick:'))
+       startsWith(github.event.label.name, 'cherry-pick:'))
     runs-on: ubuntu-latest
     permissions:
       contents: write
