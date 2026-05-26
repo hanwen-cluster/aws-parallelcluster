@@ -6,8 +6,6 @@ on:
   # Path 3: Label added to an already-merged PR (fires as issues event) — triggers immediately
   pull_request:
     types: [labeled, closed]
-  issues:
-    types: [labeled]
 
 jobs:
   cherry-pick:
