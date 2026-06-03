@@ -113,12 +113,7 @@ jobs:
               gh pr comment "${PR_NUMBER}" --repo "${{ github.repository }}" \
                 --body "⚠️ Automated cherry-pick to \`${TARGET_BRANCH}\` failed due to merge conflicts.
 
-          Please cherry-pick manually:
-          \`\`\`bash
-          git checkout ${TARGET_BRANCH}
-          git cherry-pick ${COMMITS}
-          # resolve conflicts, then push
-          \`\`\`"
+          Please cherry-pick manually"
               echo "::error::Cherry-pick to ${TARGET_BRANCH} failed due to conflicts."
             fi
 
