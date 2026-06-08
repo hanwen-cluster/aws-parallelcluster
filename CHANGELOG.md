@@ -4,7 +4,7 @@ CHANGELOG
 3.16.0
 ------
 
-**ENHANCEMENTS**
+**ENHANCEMEYNTS**
 - Improve cluster update resiliency on login nodes by reusing the head-node-driven orchestration already in place on compute nodes,
   removing the dependency on cfn-hup and cfn-init.
 
