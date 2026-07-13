@@ -449,7 +449,7 @@ class TestCloudWatchLogsExporter:
 
         cw_logs_exporter._wait_for_task_completion("task_id")
 
-        assert_that(capsys.readouterr().err).contains("Still exporting logs from CloudWatch")
+        assert_that(capsys.readouterr().err).contains("no data written to S3 yet")
 
     def test_wait_for_task_completion_shows_waiting_until_first_bytes(self, cw_logs_exporter, mocker, capsys):
         """Before CloudWatch writes anything to S3, show a waiting heartbeat rather than a misleading '0 B'."""
