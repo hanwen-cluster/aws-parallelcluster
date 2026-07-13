@@ -356,14 +356,9 @@ class CloudWatchLogsExporter:
         """
         exported_bytes = self._exported_bytes_so_far(task_id)
         elapsed = int(elapsed_seconds)
-        if not exported_bytes:  # None (could not read) or 0 (CloudWatch has not written anything yet)
-            self._report_progress(
-                f"Still exporting logs from CloudWatch (no data written to S3 yet, elapsed {elapsed}s)"
-            )
-        else:
-            self._report_progress(
-                f"Exporting logs: {format_bytes(exported_bytes)} exported so far (elapsed {elapsed}s)"
-            )
+        # exported_bytes is None (could not read) or 0 until CloudWatch starts flushing objects to S3.
+        progress = f"{format_bytes(exported_bytes)} exported so far" if exported_bytes else "no data written to S3 yet"
+        self._report_progress(f"Exporting logs from CloudWatch: {progress} (elapsed {elapsed}s)")
 
     def _exported_bytes_so_far(self, task_id):
         """Return the total size of objects the export task has written to S3 so far, or None on failure."""
