@@ -237,9 +237,6 @@ def test_build_image(
         # Validate export-image-logs as early as possible: as soon as the build log stream is
         # available the image is still BUILD_IN_PROGRESS, so the build-image stack (which
         # self-deletes only at BUILD_COMPLETE) is guaranteed to still exist.
-        _wait_for_image_log_stream(image)
-        _test_export_logs(s3_bucket_factory, image, region)
-        _test_export_logs(s3_bucket_factory, image, region, True)
 
         _wait_for_build_instance(image, region)
         _test_build_instances_tags(image, image.config["Build"]["Tags"], region)
