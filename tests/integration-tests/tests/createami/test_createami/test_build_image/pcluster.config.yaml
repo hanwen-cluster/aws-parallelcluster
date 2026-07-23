@@ -22,3 +22,7 @@ Scheduling:
             {% for instance_type in flexible_instance_types %}
             - InstanceType: {{ instance_type }}
             {% endfor %}
+DevSettings:
+  Cookbook:
+    ExtraChefAttributes: |
+      {"cluster": {"tmp_noexec": "true"}}
