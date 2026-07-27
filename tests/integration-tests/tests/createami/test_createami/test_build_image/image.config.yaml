@@ -38,4 +38,4 @@ DevSettings:
     TerminateInstanceOnFailure: True
     Cookbook:
         ExtraChefAttributes: |
-            {"cluster": {"tmp_noexec": "true", "nvidia": {"gdrcopy":{"base_url": "https://developer.nvidia.com/w/compute/redist/gdrcopy/"}}}}
+            {"cluster": {"tmp_noexec": "true", "nvidia": {"gdrcopy":{"enabled": "false"}}}}
