@@ -44,6 +44,8 @@ else
     exit 2
 fi
 
+export TMPDIR="$HOME/pcluster-cuda-samples"
+mkdir -p "$TMPDIR"
 WORKDIR=$(mktemp -d)
 trap 'rm -rf "$WORKDIR"' EXIT
 
