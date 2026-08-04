@@ -36,6 +36,3 @@ DeploymentSettings:
         - {{ default_vpc_security_group_id }}
 DevSettings:
     TerminateInstanceOnFailure: True
-    Cookbook:
-        ExtraChefAttributes: |
-            {"cluster": {"tmp_noexec": "{{ tmp_noexec }}"}}

@@ -347,6 +347,7 @@ class ImageBuilderCdkStack(Stack):
             version=utils.get_installed_version(base_version_only=True),
             tags=build_tags,
             parent_image=self.config.build.parent_image,
+            working_directory="/opt/parallelcluster/tmp",
             components=components,
             block_device_mappings=[
                 imagebuilder.CfnImageRecipe.InstanceBlockDeviceMappingProperty(

@@ -187,6 +187,7 @@ def test_build_image(
     s3_bucket_factory,
     build_image_custom_resource,
     images_factory,
+    hardened_tmp_ami_factory,
     request,
     clusters_factory,
     scheduler_commands_factory,
@@ -212,6 +213,10 @@ def test_build_image(
     base_ami, flags = _get_base_ami(region, os, architecture)
 
     enable_nvidia = flags["enable_nvidia"] and get_gpu_count(instance) > 0
+    if not enable_nvidia:
+        # Build from an AMI where /tmp is already noexec at boot. Enabling the Chef attribute alone
+        # happens too late to cover Image Builder startup and the early parallelcluster.yaml steps.
+        base_ami = hardened_tmp_ami_factory(base_ami, instance)
 
     image_config = pcluster_config_reader(
         config_file="image.config.yaml",
@@ -221,7 +226,6 @@ def test_build_image(
         enable_nvidia=str(enable_nvidia).lower(),
         update_os_packages=str(flags["update_os_packages"]).lower(),
         enable_lustre_client=str(flags["enable_lustre_client"]).lower(),
-        tmp_noexec=str(not enable_nvidia).lower(),
     )
 
     image = images_factory(image_id, image_config, region)
