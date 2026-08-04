@@ -1,0 +1,302 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Build a temporary test AMI with a persistent noexec /tmp mount
+
+Parameters:
+  ParentImage:
+    Description: Source AMI to harden.
+    Type: String
+  InstanceType:
+    Description: Instance type used by EC2 Image Builder.
+    Type: String
+  SubnetId:
+    Description: Subnet with outbound access for the build instance.
+    Type: AWS::EC2::Subnet::Id
+  VpcId:
+    Description: VPC containing the build subnet.
+    Type: AWS::EC2::VPC::Id
+
+Resources:
+  AmiHelper:
+    Type: AWS::CloudFormation::CustomResource
+    Properties:
+      ServiceToken: !GetAtt AmiHelperFunction.Arn
+      SourceAmi: !Ref ParentImage
+      StackName: !Ref AWS::StackName
+
+  AmiHelperFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.handler
+      Runtime: python3.12
+      Timeout: 300
+      Role: !GetAtt AmiHelperRole.Arn
+      Code:
+        ZipFile: |
+          import json
+          import time
+          import urllib.request
+
+          import boto3
+          from botocore.exceptions import ClientError
+
+          ec2 = boto3.client("ec2")
+          STACK_TAG = "parallelcluster:tmp-noexec-stack"
+
+          def respond(event, status, data=None):
+              body = {
+                  "Status": status,
+                  "PhysicalResourceId": event.get("PhysicalResourceId", "tmp-noexec-ami-helper"),
+                  "StackId": event["StackId"],
+                  "RequestId": event["RequestId"],
+                  "LogicalResourceId": event["LogicalResourceId"],
+              }
+              if status == "FAILED":
+                  body["Reason"] = "See CloudWatch Logs"
+              if data:
+                  body["Data"] = data
+              payload = json.dumps(body).encode()
+              request = urllib.request.Request(
+                  event["ResponseURL"],
+                  data=payload,
+                  method="PUT",
+                  headers={"content-type": "", "content-length": str(len(payload))},
+              )
+              urllib.request.urlopen(request)
+
+          def delete_snapshot(snapshot_id):
+              for attempt in range(12):
+                  try:
+                      ec2.delete_snapshot(SnapshotId=snapshot_id)
+                      return
+                  except ClientError as error:
+                      code = error.response["Error"]["Code"]
+                      if code == "InvalidSnapshot.NotFound":
+                          return
+                      if code != "InvalidSnapshot.InUse" or attempt == 11:
+                          raise
+                      time.sleep(5)
+
+          def cleanup(stack_name):
+              if not stack_name:
+                  return
+              images = ec2.describe_images(
+                  Owners=["self"], Filters=[{"Name": "tag:" + STACK_TAG, "Values": [stack_name]}]
+              ).get("Images", [])
+              for image in images:
+                  snapshots = [
+                      mapping["Ebs"]["SnapshotId"]
+                      for mapping in image.get("BlockDeviceMappings", [])
+                      if mapping.get("Ebs", {}).get("SnapshotId")
+                  ]
+                  if snapshots:
+                      ec2.create_tags(Resources=snapshots, Tags=[{"Key": STACK_TAG, "Value": stack_name}])
+                  ec2.deregister_image(ImageId=image["ImageId"])
+                  for snapshot in snapshots:
+                      delete_snapshot(snapshot)
+
+          def handler(event, context):
+              try:
+                  properties = event.get("ResourceProperties", {})
+                  if event["RequestType"] == "Delete":
+                      cleanup(properties.get("StackName"))
+                      return respond(event, "SUCCESS")
+                  source_ami = properties["SourceAmi"]
+                  image = ec2.describe_images(ImageIds=[source_ami])["Images"][0]
+                  return respond(event, "SUCCESS", {"SourceName": image.get("Name", source_ami)[:88]})
+              except Exception as error:
+                  print("Error: %s" % error)
+                  return respond(event, "FAILED")
+
+  AmiHelperRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: !Sub lambda.${AWS::URLSuffix}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: manage-temporary-test-ami
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: ec2:DescribeImages
+                Resource: "*"
+              - Effect: Allow
+                Action: ec2:CreateTags
+                Resource: !Sub arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:snapshot/*
+                Condition:
+                  StringEquals:
+                    aws:RequestTag/parallelcluster:tmp-noexec-stack: !Ref AWS::StackName
+              - Effect: Allow
+                Action: ec2:DeregisterImage
+                Resource: !Sub arn:${AWS::Partition}:ec2:${AWS::Region}::image/*
+                Condition:
+                  StringEquals:
+                    aws:ResourceTag/parallelcluster:tmp-noexec-stack: !Ref AWS::StackName
+              - Effect: Allow
+                Action: ec2:DeleteSnapshot
+                Resource: !Sub arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:snapshot/*
+                Condition:
+                  StringEquals:
+                    aws:ResourceTag/parallelcluster:tmp-noexec-stack: !Ref AWS::StackName
+
+  HardenedImage:
+    Type: AWS::ImageBuilder::Image
+    DependsOn: RecipeLogGroup
+    Properties:
+      ImageRecipeArn: !Ref HardenedImageRecipe
+      InfrastructureConfigurationArn: !Ref HardenedInfrastructureConfiguration
+      DistributionConfigurationArn: !Ref HardenedDistributionConfiguration
+      ImageTestsConfiguration:
+        ImageTestsEnabled: false
+
+  HardenedImageRecipe:
+    Type: AWS::ImageBuilder::ImageRecipe
+    Properties:
+      Name: !Sub pcluster-tmp-noexec-recipe-${AWS::StackName}
+      Version: 1.0.0
+      ParentImage: !Ref ParentImage
+      WorkingDirectory: /var/tmp
+      Components:
+        - ComponentArn: !Ref HardenTmpComponent
+
+  HardenTmpComponent:
+    Type: AWS::ImageBuilder::Component
+    Properties:
+      Name: !Sub pcluster-tmp-noexec-${AWS::StackName}
+      Platform: Linux
+      Version: 1.0.0
+      Description: Persist and validate noexec, nosuid, and nodev mount options on /tmp.
+      Data: |
+        name: HardenTmpMount
+        description: Persist and validate restrictive mount options on /tmp.
+        schemaVersion: 1.0
+        phases:
+          - name: build
+            steps:
+              - name: ConfigureTmpMount
+                action: ExecuteBash
+                inputs:
+                  commands:
+                    - |
+                      set -euxo pipefail
+                      install -d -o root -g root -m 0700 /opt/parallelcluster/tmp
+                      cp --preserve=all /etc/fstab /etc/fstab.pcluster-tmp-noexec.backup
+                      awk '
+                      function add_option(options, option, item_count, i, items) {
+                          item_count = split(options, items, ",")
+                          for (i = 1; i <= item_count; i++) {
+                              if (items[i] == option) return options
+                          }
+                          return options "," option
+                      }
+                      BEGIN { found = 0 }
+                      $1 !~ /^#/ && $2 == "/tmp" {
+                          $4 = add_option($4, "noexec")
+                          $4 = add_option($4, "nosuid")
+                          $4 = add_option($4, "nodev")
+                          found = 1
+                      }
+                      { print }
+                      END {
+                          if (!found) print "/tmp", "/tmp", "none", "bind,rw,nodev,nosuid,noexec", "0", "0"
+                      }
+                      ' OFS='\t' /etc/fstab > /etc/fstab.pcluster-tmp-noexec
+                      install -o root -g root -m 0644 /etc/fstab.pcluster-tmp-noexec /etc/fstab
+                      rm -f /etc/fstab.pcluster-tmp-noexec
+                      mount --bind /tmp /tmp
+                      mount -o remount,bind,rw,nodev,nosuid,noexec /tmp
+                      options=$(findmnt -no OPTIONS --target /tmp)
+                      for option in noexec nosuid nodev; do
+                          echo "$options" | tr ',' '\n' | grep -Fx "$option"
+                      done
+              - name: RebootWithHardenedTmp
+                action: Reboot
+              - name: VerifyTmpMountAfterReboot
+                action: ExecuteBash
+                inputs:
+                  commands:
+                    - |
+                      set -euxo pipefail
+                      options=$(findmnt -no OPTIONS --target /tmp)
+                      for option in noexec nosuid nodev; do
+                          echo "$options" | tr ',' '\n' | grep -Fx "$option"
+                      done
+                      if [[ -x /usr/local/sbin/ami_cleanup.sh ]]; then
+                          /usr/local/sbin/ami_cleanup.sh
+                      fi
+
+  RecipeLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: !Sub /aws/imagebuilder/pcluster-tmp-noexec-recipe-${AWS::StackName}
+      RetentionInDays: 7
+
+  HardenedInfrastructureConfiguration:
+    Type: AWS::ImageBuilder::InfrastructureConfiguration
+    Properties:
+      Name: !Sub pcluster-tmp-noexec-config-${AWS::StackName}
+      InstanceProfileName: !Ref BuildInstanceProfile
+      InstanceTypes:
+        - !Ref InstanceType
+      SubnetId: !Ref SubnetId
+      SecurityGroupIds:
+        - !Ref BuildSecurityGroup
+      TerminateInstanceOnFailure: true
+      InstanceMetadataOptions:
+        HttpTokens: required
+
+  HardenedDistributionConfiguration:
+    Type: AWS::ImageBuilder::DistributionConfiguration
+    Properties:
+      Name: !Sub pcluster-tmp-noexec-distribution-${AWS::StackName}
+      Distributions:
+        - Region: !Ref AWS::Region
+          AmiDistributionConfiguration:
+            Name: !Sub "tmp-noexec-${AWS::StackName}-{{ imagebuilder:buildDate }}"
+            AmiTags:
+              parallelcluster:tmp-noexec-stack: !Ref AWS::StackName
+              parallelcluster:source-ami: !Ref ParentImage
+
+  BuildInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref BuildInstanceRole
+
+  BuildInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: !Sub ec2.${AWS::URLSuffix}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/EC2InstanceProfileForImageBuilder
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore
+
+  BuildSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for the temporary noexec AMI build instance
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+        - CidrIp: 0.0.0.0/0
+          Description: Allow outbound traffic required by EC2 Image Builder
+          IpProtocol: "-1"
+
+Outputs:
+  AmiId:
+    Description: Temporary hardened AMI produced by EC2 Image Builder.
+    Value: !GetAtt HardenedImage.ImageId
