@@ -445,7 +445,13 @@ def clusters_factory(request, region):
     """
     factory = ClustersFactory(delete_logs_on_success=request.config.getoption("delete_logs_on_success"))
 
-    def _cluster_factory(cluster_config, upper_case_cluster_name=False, custom_cli_credentials=None, **kwargs):
+    def _cluster_factory(
+        cluster_config,
+        upper_case_cluster_name=False,
+        custom_cli_credentials=None,
+        post_cluster_setup=None,
+        **kwargs,
+    ):
         cluster_config = _write_config_to_outdir(request, cluster_config, "clusters_configs")
         cluster_name = (
             request.config.getoption("cluster")
@@ -466,7 +472,9 @@ def clusters_factory(request, region):
         )
         if not request.config.getoption("cluster"):
             cluster.creation_response = factory.create_cluster(cluster, request, **kwargs)
-        # Run pcluster-diag after every successful cluster creation
+        if cluster.create_complete and post_cluster_setup:
+            post_cluster_setup(cluster)
+        # Run pcluster-diag after every successful cluster creation and any required post-create setup
         _run_pcluster_diag(request, cluster)
         return cluster
 
