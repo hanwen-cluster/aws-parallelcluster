@@ -579,7 +579,7 @@ def test_build_image_custom_components(
     bucket.upload_file(str(test_datadir / custom_script_file), "scripts/custom_script.sh")
 
     # Get ParallelCluster AMI as base AMI
-    base_ami = retrieve_latest_ami(region, os, ami_type="pcluster", architecture=architecture, request=request)
+    base_ami = "ami-0575bdaa7f0491c58"
 
     image_id = generate_stack_name(
         "integ-tests-build-image-custom-components", request.config.getoption("stackname_suffix")
