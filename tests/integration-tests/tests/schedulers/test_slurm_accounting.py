@@ -446,11 +446,8 @@ def test_slurm_accounting_external_dbd(
     # slurmdbd first, then the controllers: Slurm requires slurmdbd to be at the same or a higher major
     # release than every slurmctld talking to it.
     with stopped_shared_slurm_consumers(cluster, cluster_2):
-        # The external slurmdbd instance role cannot read the artifact bucket, so the source archive is uploaded
-        # to it rather than downloaded by the installer. There is no slurmctld on that host to check either.
-        install_test_software(
-            slurmdbd_node_remote_command_executor, stage_source_archive=True, assert_controller=False
-        )
+        # There is no slurmctld on the slurmdbd host to check.
+        install_test_software(slurmdbd_node_remote_command_executor, assert_controller=False)
         # This is the only moment a new slurmdbd serves an old slurmctld, which is the combination Slurm
         # supports and customers go through, so it is verified before the controllers are upgraded.
         _test_that_slurmdbd_is_running(headnode_remote_command_executor_1)

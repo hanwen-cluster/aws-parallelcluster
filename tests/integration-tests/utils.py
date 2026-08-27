@@ -30,6 +30,8 @@ from jinja2.sandbox import SandboxedEnvironment
 from retrying import retry
 from time_utils import minutes, seconds
 
+# Declared here rather than imported from pcluster.constants, which does not have it in the older ParallelCluster
+# versions the Slurm upgrade suite runs against.
 EXCLUDED_INSTANCE_TYPE_PREFIXES = (
     "m1",
     "m2",
@@ -601,11 +603,7 @@ def get_username_for_os(os):
         "rhel9": "ec2-user",
         "rocky9": "rocky",
     }
-    # An OS missing from the map used to yield a None username, which only showed up much later as an unexplained
-    # "Authentication failed." from paramiko, so the missing mapping is reported here instead.
-    if os not in usernames:
-        raise Exception(f"No default username known for os {os}; add it to get_username_for_os")
-    return usernames[os]
+    return usernames.get(os)
 
 
 def get_instance_public_ip_by_private_ip(private_ip, region):

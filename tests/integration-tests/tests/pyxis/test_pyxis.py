@@ -52,24 +52,60 @@ def test_pyxis(pcluster_config_reader, clusters_factory, test_datadir, s3_bucket
     remote_command_executor = RemoteCommandExecutor(cluster)
     slurm_commands = SlurmCommands(remote_command_executor)
 
-    _run_pyxis_job(
-        remote_command_executor,
-        slurm_commands,
+    # Submit the first containerized job with dynamic 3 or 1000 nodes
+    logging.info("Submitting first containerized job")
+
+    result = slurm_commands.submit_command(
+        command="srun --container-image docker://ubuntu:22.04 hostname",
         nodes=max_queue_size,
-        job_description="first",
-        timeout=30 if scale_up_fleet else 12,
     )
-    _run_pyxis_job(remote_command_executor, slurm_commands, nodes=3, job_description="second")
+    job_id = slurm_commands.assert_job_submitted(result.stdout)
+    slurm_commands.wait_job_completed(job_id, timeout=30 if scale_up_fleet else 12)
+    slurm_commands.assert_job_succeeded(job_id)
+
+    # Fetch the job output and check for the expected messages
+    logging.info("Checking output of the first job")
+    slurm_out_1 = remote_command_executor.run_remote_command("cat slurm-1.out").stdout
+
+    logging.info("Checking for expected messages in first job output")
+    assert_that(slurm_out_1).contains("pyxis: imported docker image: docker://ubuntu:22.04")
+
+    # Submit the second containerized job with fixed 3 nodes after the first one completes
+    logging.info("Submitting second containerized job")
+    result = slurm_commands.submit_command(
+        command="srun --container-image docker://ubuntu:22.04 hostname",
+        nodes=3,
+    )
+    job_id = slurm_commands.assert_job_submitted(result.stdout)
+    slurm_commands.wait_job_completed(job_id)
+    slurm_commands.assert_job_succeeded(job_id)
+
+    # Fetch the job output and check for the expected messages
+    logging.info("Checking output of the second job")
+    slurm_out_2 = remote_command_executor.run_remote_command("cat slurm-2.out").stdout
+
+    logging.info("Checking for expected messages in second job output")
+    assert_that(slurm_out_2).contains("pyxis: imported docker image: docker://ubuntu:22.04")
 
     slurm_version_before = get_slurm_version(remote_command_executor)
     install_test_software_with_stopped_consumers(remote_command_executor, cluster)
-
     remote_command_executor = RemoteCommandExecutor(cluster)
     slurm_commands = SlurmCommands(remote_command_executor)
     _rebuild_pyxis_if_slurm_major_changed(
         remote_command_executor, test_datadir, slurm_version_before, get_slurm_version(remote_command_executor)
     )
-    _run_pyxis_job(remote_command_executor, slurm_commands, nodes=3, job_description="post-install")
+
+    # Submit the same job once more, to check the upgraded Slurm still runs containerized jobs
+    logging.info("Submitting third containerized job")
+    result = slurm_commands.submit_command(
+        command="srun --container-image docker://ubuntu:22.04 hostname",
+        nodes=3,
+    )
+    job_id = slurm_commands.assert_job_submitted(result.stdout)
+    slurm_commands.wait_job_completed(job_id)
+    slurm_commands.assert_job_succeeded(job_id)
+    slurm_out_3 = remote_command_executor.run_remote_command(f"cat slurm-{job_id}.out").stdout
+    assert_that(slurm_out_3).contains("pyxis: imported docker image: docker://ubuntu:22.04")
 
 
 def _rebuild_pyxis_if_slurm_major_changed(remote_command_executor, test_datadir, version_before, version_after):
@@ -100,21 +136,3 @@ def _rebuild_pyxis_if_slurm_major_changed(remote_command_executor, test_datadir,
     remote_command_executor.run_remote_script(
         str(test_datadir / "rebuild_pyxis.sh"), run_as_root=True, timeout=1800, pty=False
     )
-
-
-def _run_pyxis_job(remote_command_executor, slurm_commands, nodes, job_description, timeout=None):
-    """Submit a containerized job and verify that Pyxis imported the expected image."""
-    logging.info("Submitting %s containerized job", job_description)
-    result = slurm_commands.submit_command(
-        command="srun --container-image docker://ubuntu:22.04 hostname",
-        nodes=nodes,
-    )
-    job_id = slurm_commands.assert_job_submitted(result.stdout)
-    slurm_commands.wait_job_completed(job_id, timeout=timeout)
-    slurm_commands.assert_job_succeeded(job_id)
-
-    logging.info("Checking output of the %s job", job_description)
-    slurm_output = remote_command_executor.run_remote_command(f"cat slurm-{job_id}.out").stdout
-
-    logging.info("Checking for expected messages in %s job output", job_description)
-    assert_that(slurm_output).contains("pyxis: imported docker image: docker://ubuntu:22.04")

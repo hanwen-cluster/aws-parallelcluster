@@ -113,13 +113,14 @@ def _source_archive_location(script_path):
 
 
 def _stage_source_archive(executor, script_path):
-    """Upload the Slurm source archive to a host that has no read access to the artifact bucket.
+    """Upload the Slurm source archive to the target host, which is not expected to read the artifact bucket itself.
 
-    The installer downloads the archive itself, which every cluster node can do because the cluster configuration
-    grants it. An external slurmdbd instance is not a cluster node: its instance role comes from the customer-facing
-    CloudFormation template, which grants S3 access to its own bucket only and takes no parameter to extend that. So
-    the archive travels over the same SSH connection as the installer, on the test runner's credentials, and the
-    installer picks up an archive that is already in place instead of downloading one.
+    The installer can download the archive on its own, but only from a host whose instance role grants read access to
+    the artifact bucket. Neither the head node of a cluster nor an external slurmdbd instance has that access, and
+    granting it would mean editing the cluster configuration of every test that installs the software (and would be
+    impossible for the slurmdbd instance, whose role comes from a customer-facing CloudFormation template that takes
+    no parameter to extend it). So the archive travels over the same SSH connection as the installer, on the test
+    runner's credentials, and the installer picks up an archive that is already in place instead of downloading one.
     """
     archive_key, remote_path = _source_archive_location(script_path)
     local_path = _download_artifact(archive_key, ".tar.gz", 0o600, _artifact_region())
@@ -473,15 +474,13 @@ def _report_slurmctld_log_of_install(executor, offset):
     ).is_empty()
 
 
-def install_test_software(executor, stage_source_archive=False, assert_controller=True):
-    """Download the installer from us-east-1, run it on the target host and verify what it left behind.
+def install_test_software(executor, assert_controller=True):
+    """Download the installer and the Slurm sources, run the installer on the target host and verify what it left.
 
-    Set stage_source_archive when the target host cannot read the artifact bucket itself, see _stage_source_archive.
     Clear assert_controller for a host that runs no slurmctld, such as an external slurmdbd instance.
     """
     script_path = _download_software_installer_script()
-    if stage_source_archive:
-        _stage_source_archive(executor, script_path)
+    _stage_source_archive(executor, script_path)
     target_version = _installer_constant(Path(script_path).read_text(encoding="utf-8"), "TARGET_RUNTIME_VERSION")
     version_before = get_slurm_version(executor)
     slurmctld_log_size = _log_file_size(executor, _SLURMCTLD_LOG)

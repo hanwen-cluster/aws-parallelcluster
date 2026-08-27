@@ -31,6 +31,8 @@ from pcluster.constants import (
     UNSUPPORTED_OSES_FOR_LUSTRE,
 )
 
+# Declared here rather than imported from pcluster.constants, which does not have it in the older ParallelCluster
+# versions the Slurm upgrade suite runs against.
 UNSUPPORTED_OSES_FOR_NON_GPU_DCV = ["rocky9", "rhel9"]
 EXCLUDED_INSTANCE_TYPE_PREFIXES = (
     "m1",
