@@ -21,9 +21,14 @@ import boto3
 from assertpy import assert_that
 from retrying import retry
 from time_utils import minutes, seconds
-from utils import describe_cluster_instances
+from utils import (
+    DEFAULT_PARTITION,
+    DEFAULT_REPORTING_REGION,
+    REPORTING_REGION_MAP,
+    describe_cluster_instances,
+    get_arn_partition,
+)
 
-_INSTALLER_REGION = "us-east-1"
 _INSTALLER_BUCKET = "aws-parallelcluster-dev-build-dependencies"
 _INSTALLER_KEY = "install_software.sh"
 _COMPUTE_INSTANCE_STATES = ["pending", "running", "shutting-down", "stopping", "stopped"]
@@ -50,19 +55,29 @@ _INSTALL_BACKUP_GLOB = "/opt/slurm_backup_*.tar.gz"
 _STATE_BACKUP_GLOB = "/opt/slurm_state_backup_*.tar.gz"
 
 
+def _artifact_region():
+    """Return the Region the artifact bucket lives in for the partition the tests are running against.
+
+    The bucket name is the same in every partition, but the bucket is not: each partition has its own copy, in the
+    Region where the development infrastructure of that partition runs, and it is only reachable from inside that
+    partition. That is the same Region the test framework reports metrics to, so the mapping is reused from there.
+    """
+    region = os.environ.get("AWS_DEFAULT_REGION")
+    partition = get_arn_partition(region) if region else DEFAULT_PARTITION
+    return REPORTING_REGION_MAP.get(partition, DEFAULT_REPORTING_REGION)
+
+
 @lru_cache(maxsize=None)
-def _download_artifact(key, suffix, mode):
+def _download_artifact(key, suffix, mode, region):
     """Download an artifact bucket object once per session and return the local path it was cached at."""
     file_descriptor, downloaded_path = tempfile.mkstemp(prefix="pcluster-software-installer-", suffix=suffix)
     os.close(file_descriptor)
     try:
-        logging.info("Downloading s3://%s/%s in region %s", _INSTALLER_BUCKET, key, _INSTALLER_REGION)
-        boto3.client("s3", region_name=_INSTALLER_REGION).download_file(_INSTALLER_BUCKET, key, downloaded_path)
+        logging.info("Downloading s3://%s/%s in region %s", _INSTALLER_BUCKET, key, region)
+        boto3.client("s3", region_name=region).download_file(_INSTALLER_BUCKET, key, downloaded_path)
         os.chmod(downloaded_path, mode)
     except Exception as error:
-        raise RuntimeError(
-            f"Failed to download s3://{_INSTALLER_BUCKET}/{key} in region {_INSTALLER_REGION}: {error}"
-        ) from error
+        raise RuntimeError(f"Failed to download s3://{_INSTALLER_BUCKET}/{key} in region {region}: {error}") from error
 
     # The digest identifies which revision of a mutable bucket object a run actually used, which the object key
     # alone does not: the installer script is overwritten in place whenever it is fixed.
@@ -72,7 +87,7 @@ def _download_artifact(key, suffix, mode):
 
 
 def _download_software_installer_script():
-    return _download_artifact(_INSTALLER_KEY, ".sh", 0o700)
+    return _download_artifact(_INSTALLER_KEY, ".sh", 0o700, _artifact_region())
 
 
 def _installer_constant(script_text, name, substitutions=None):
@@ -107,7 +122,7 @@ def _stage_source_archive(executor, script_path):
     installer picks up an archive that is already in place instead of downloading one.
     """
     archive_key, remote_path = _source_archive_location(script_path)
-    local_path = _download_artifact(archive_key, ".tar.gz", 0o600)
+    local_path = _download_artifact(archive_key, ".tar.gz", 0o600, _artifact_region())
     remote_name = os.path.basename(remote_path)
     logging.info("Staging s3://%s/%s at %s on the target host", _INSTALLER_BUCKET, archive_key, remote_path)
     executor.run_remote_command(
