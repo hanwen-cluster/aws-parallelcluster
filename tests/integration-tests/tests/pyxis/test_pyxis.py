@@ -10,7 +10,6 @@
 # This file is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, express or implied.
 # See the License for the specific language governing permissions and limitations under the License.
 import logging
-import re
 
 import boto3
 import pytest
@@ -19,9 +18,9 @@ from remote_command_executor import RemoteCommandExecutor
 
 from tests.common.schedulers_common import SlurmCommands
 from tests.common.software_installer import (
-    assert_slurm_controller_healthy,
     get_slurm_version,
     install_test_software_with_stopped_consumers,
+    slurm_major_version,
 )
 
 
@@ -63,8 +62,7 @@ def test_pyxis(pcluster_config_reader, clusters_factory, test_datadir, s3_bucket
     _run_pyxis_job(remote_command_executor, slurm_commands, nodes=3, job_description="second")
 
     slurm_version_before = get_slurm_version(remote_command_executor)
-    install_test_software_with_stopped_consumers(remote_command_executor, region, cluster)
-    assert_slurm_controller_healthy(remote_command_executor)
+    install_test_software_with_stopped_consumers(remote_command_executor, cluster)
 
     remote_command_executor = RemoteCommandExecutor(cluster)
     slurm_commands = SlurmCommands(remote_command_executor)
@@ -72,12 +70,6 @@ def test_pyxis(pcluster_config_reader, clusters_factory, test_datadir, s3_bucket
         remote_command_executor, test_datadir, slurm_version_before, get_slurm_version(remote_command_executor)
     )
     _run_pyxis_job(remote_command_executor, slurm_commands, nodes=3, job_description="post-install")
-
-
-def _slurm_major_version(version):
-    """Return the major.minor Slurm release of a version string such as "slurm 24.11.6", or None."""
-    match = re.search(r"(\d+)\.(\d+)", version or "")
-    return match.group(0) if match else None
 
 
 def _rebuild_pyxis_if_slurm_major_changed(remote_command_executor, test_datadir, version_before, version_after):
@@ -91,8 +83,8 @@ def _rebuild_pyxis_if_slurm_major_changed(remote_command_executor, test_datadir,
     Within a major release the plugin the AMI shipped stays loadable, so it is deliberately left alone: that
     keeps the same-major runs covering the case where no rebuild is needed.
     """
-    major_before = _slurm_major_version(version_before)
-    major_after = _slurm_major_version(version_after)
+    major_before = slurm_major_version(version_before)
+    major_after = slurm_major_version(version_after)
     if major_before is not None and major_before == major_after:
         logging.info(
             "Slurm stayed on major release %s (%s -> %s), so the Pyxis plugin from the AMI is still loadable",
@@ -118,10 +110,7 @@ def _run_pyxis_job(remote_command_executor, slurm_commands, nodes, job_descripti
         nodes=nodes,
     )
     job_id = slurm_commands.assert_job_submitted(result.stdout)
-    if timeout is None:
-        slurm_commands.wait_job_completed(job_id)
-    else:
-        slurm_commands.wait_job_completed(job_id, timeout=timeout)
+    slurm_commands.wait_job_completed(job_id, timeout=timeout)
     slurm_commands.assert_job_succeeded(job_id)
 
     logging.info("Checking output of the %s job", job_description)

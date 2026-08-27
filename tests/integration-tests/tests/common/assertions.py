@@ -133,16 +133,22 @@ def known_harmless_slurm_daemon_errors():
 
 
 def assert_no_errors_in_service_log(
-    remote_command_executor: RemoteCommandExecutor, service_name: str, ignore_patterns=None
+    remote_command_executor: RemoteCommandExecutor, service_name: str, ignore_patterns=None, since=None
 ):
     """Assert that the systemd journal for a given service contains no error-level entries.
 
     Lines containing any of ignore_patterns are excluded, to allow known-harmless messages such as the defunct
     slurm.conf parameters reported by known_defunct_slurm_config_params.
+
+    The journal is cumulative, so pass since (any journalctl timestamp) to scope the check to the entries written
+    after a given point, for example to check what a service logged after an upgrade rather than since boot.
     """
     __tracebackhide__ = True
     logging.info("Checking %s journal for error-level entries", service_name)
-    log = remote_command_executor.run_remote_command(f"sudo journalctl -u {service_name} --no-pager", hide=True).stdout
+    since_option = f" --since '{since}'" if since else ""
+    log = remote_command_executor.run_remote_command(
+        f"sudo journalctl -u {service_name} --no-pager{since_option}", hide=True
+    ).stdout
     error_lines = [line for line in log.splitlines() if re.search(r"fail|error|critical", line, re.IGNORECASE)]
     if ignore_patterns:
         error_lines = [line for line in error_lines if not any(pattern in line for pattern in ignore_patterns)]

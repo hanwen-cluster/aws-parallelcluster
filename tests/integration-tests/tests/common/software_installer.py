@@ -8,30 +8,26 @@
 # or in the "LICENSE.txt" file accompanying this file. This file is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES
 # OR CONDITIONS OF ANY KIND, express or implied. See the License for the specific language governing permissions and
 # limitations under the License.
-import atexit
 import hashlib
 import logging
 import os
 import re
 import tempfile
-import threading
 from contextlib import contextmanager
+from functools import lru_cache
 from pathlib import Path
 
 import boto3
 from assertpy import assert_that
 from retrying import retry
 from time_utils import minutes, seconds
+from utils import describe_cluster_instances
 
 _INSTALLER_REGION = "us-east-1"
 _INSTALLER_BUCKET = "aws-parallelcluster-dev-build-dependencies"
 _INSTALLER_KEY = "install_software.sh"
-_DOWNLOAD_CACHE = {}
-_DOWNLOAD_CACHE_LOCK = threading.Lock()
 _COMPUTE_INSTANCE_STATES = ["pending", "running", "shutting-down", "stopping", "stopped"]
 _COMPUTE_FLEET_TERMINAL_STATES = {"RUNNING", "STOPPED", "PROTECTED"}
-_COMPUTE_FLEET_START_TRANSITIONS = {"START_REQUESTED", "STARTING"}
-_COMPUTE_FLEET_STOP_TRANSITIONS = {"STOP_REQUESTED", "STOPPING"}
 _CAPACITY_WAIT_MINUTES = 15
 # Login nodes are drained before they are terminated, and loginmgtd waits out the pool's grace time period (10 minutes
 # by default) before it lets the Auto Scaling group reclaim them, so a pool routinely takes over 10 minutes and has
@@ -54,72 +50,25 @@ _INSTALL_BACKUP_GLOB = "/opt/slurm_backup_*.tar.gz"
 _STATE_BACKUP_GLOB = "/opt/slurm_state_backup_*.tar.gz"
 
 
-class _UnexpectedComputeFleetStatusError(RuntimeError):
-    pass
-
-
-def _sha256(path):
-    digest = hashlib.sha256()
-    with path.open("rb") as script:
-        for chunk in iter(lambda: script.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _remove_file(path):
-    try:
-        Path(path).unlink()
-    except FileNotFoundError:
-        pass
-    except OSError as error:
-        logging.warning("Unable to remove cached software installer script %s: %s", path, error)
-
-
-def _cleanup_cached_downloads():
-    with _DOWNLOAD_CACHE_LOCK:
-        cached_paths = list(_DOWNLOAD_CACHE.values())
-        _DOWNLOAD_CACHE.clear()
-
-    for path in cached_paths:
-        _remove_file(path)
-
-
-atexit.register(_cleanup_cached_downloads)
-
-
+@lru_cache(maxsize=None)
 def _download_artifact(key, suffix, mode):
     """Download an artifact bucket object once per session and return the local path it was cached at."""
-    with _DOWNLOAD_CACHE_LOCK:
-        cached_path = _DOWNLOAD_CACHE.get(key)
-        if cached_path:
-            path = Path(cached_path)
-            if path.is_file() and os.access(path, os.R_OK):
-                try:
-                    digest = _sha256(path)
-                except OSError:
-                    pass
-                else:
-                    logging.info("Using cached s3://%s/%s (SHA-256: %s)", _INSTALLER_BUCKET, key, digest)
-                    return cached_path
-            _DOWNLOAD_CACHE.pop(key, None)
-            _remove_file(cached_path)
+    file_descriptor, downloaded_path = tempfile.mkstemp(prefix="pcluster-software-installer-", suffix=suffix)
+    os.close(file_descriptor)
+    try:
+        logging.info("Downloading s3://%s/%s in region %s", _INSTALLER_BUCKET, key, _INSTALLER_REGION)
+        boto3.client("s3", region_name=_INSTALLER_REGION).download_file(_INSTALLER_BUCKET, key, downloaded_path)
+        os.chmod(downloaded_path, mode)
+    except Exception as error:
+        raise RuntimeError(
+            f"Failed to download s3://{_INSTALLER_BUCKET}/{key} in region {_INSTALLER_REGION}: {error}"
+        ) from error
 
-        file_descriptor, downloaded_path = tempfile.mkstemp(prefix="pcluster-software-installer-", suffix=suffix)
-        os.close(file_descriptor)
-        try:
-            logging.info("Downloading s3://%s/%s in region %s", _INSTALLER_BUCKET, key, _INSTALLER_REGION)
-            boto3.client("s3", region_name=_INSTALLER_REGION).download_file(_INSTALLER_BUCKET, key, downloaded_path)
-            os.chmod(downloaded_path, mode)
-            digest = _sha256(Path(downloaded_path))
-            logging.info("Downloaded s3://%s/%s (SHA-256: %s)", _INSTALLER_BUCKET, key, digest)
-        except Exception as error:
-            _remove_file(downloaded_path)
-            raise RuntimeError(
-                f"Failed to download s3://{_INSTALLER_BUCKET}/{key} in region {_INSTALLER_REGION}: {error}"
-            ) from error
-
-        _DOWNLOAD_CACHE[key] = downloaded_path
-        return downloaded_path
+    # The digest identifies which revision of a mutable bucket object a run actually used, which the object key
+    # alone does not: the installer script is overwritten in place whenever it is fixed.
+    digest = hashlib.sha256(Path(downloaded_path).read_bytes()).hexdigest()
+    logging.info("Downloaded s3://%s/%s (SHA-256: %s)", _INSTALLER_BUCKET, key, digest)
+    return downloaded_path
 
 
 def _download_software_installer_script():
@@ -168,50 +117,41 @@ def _stage_source_archive(executor, script_path):
     )
 
 
-def _deduplicate_clusters(clusters):
-    unique_clusters = []
-    seen = set()
-    for cluster in clusters:
-        key = (cluster.name, cluster.region)
-        if key not in seen:
-            seen.add(key)
-            unique_clusters.append(cluster)
-    return unique_clusters
+def _compute_instance_ids(cluster):
+    """Return the IDs of the compute instances of a cluster that are not gone yet.
+
+    Instances that are shutting down still count as consumers: they keep the shared /opt/slurm of the head node
+    mounted, and their slurmd is still running the version the installer is about to replace.
+    """
+    instances = describe_cluster_instances(
+        cluster.cfn_name,
+        cluster.region,
+        filter_by_node_type="Compute",
+        filter_by_instance_states=_COMPUTE_INSTANCE_STATES,
+    )
+    return sorted(instance["InstanceId"] for instance in instances)
 
 
-def _get_compute_instance_ids(snapshot):
-    filters = [
-        {"Name": "tag:parallelcluster:cluster-name", "Values": [snapshot["cluster"].cfn_name]},
-        {"Name": "tag:parallelcluster:node-type", "Values": ["Compute"]},
-        {"Name": "instance-state-name", "Values": _COMPUTE_INSTANCE_STATES},
+def _describe_login_asg(snapshot, asg_snapshot):
+    """Return the Auto Scaling group of a login pool, checking it is the group the pool owns.
+
+    The group name is built out of the cluster and pool names rather than read from the cluster, so the
+    parallelcluster:login-nodes-pool tag is what confirms the guess landed on the right group before its capacity
+    is changed.
+    """
+    asg_name = asg_snapshot["AutoScalingGroupName"]
+    groups = snapshot["autoscaling"].describe_auto_scaling_groups(AutoScalingGroupNames=[asg_name])[
+        "AutoScalingGroups"
     ]
-    instance_ids = set()
-    paginator = snapshot["ec2"].get_paginator("describe_instances")
-    for page in paginator.paginate(Filters=filters):
-        for reservation in page.get("Reservations", []):
-            instance_ids.update(instance["InstanceId"] for instance in reservation.get("Instances", []))
-    return instance_ids
-
-
-def _describe_login_asg(snapshot, asg_name, pool_name):
-    groups = snapshot["autoscaling"].describe_auto_scaling_groups(
-        AutoScalingGroupNames=[asg_name]
-    ).get("AutoScalingGroups", [])
-    if len(groups) != 1 or groups[0].get("AutoScalingGroupName") != asg_name:
-        raise RuntimeError(
-            f"Expected exactly one login-node Auto Scaling group named {asg_name}, found {len(groups)}"
-        )
+    if len(groups) != 1 or groups[0]["AutoScalingGroupName"] != asg_name:
+        raise RuntimeError(f"Expected exactly one login-node Auto Scaling group named {asg_name}, found {len(groups)}")
 
     group = groups[0]
-    tag_values = [
-        tag.get("Value")
-        for tag in group.get("Tags", [])
-        if tag.get("Key") == "parallelcluster:login-nodes-pool"
-    ]
-    if tag_values != [pool_name]:
+    tag_values = [tag["Value"] for tag in group.get("Tags", []) if tag["Key"] == "parallelcluster:login-nodes-pool"]
+    if tag_values != [asg_snapshot["pool_name"]]:
         raise RuntimeError(
             f"Auto Scaling group {asg_name} has unexpected parallelcluster:login-nodes-pool tag values "
-            f"{tag_values}; expected [{pool_name}]"
+            f"{tag_values}; expected [{asg_snapshot['pool_name']}]"
         )
     return group
 
@@ -219,10 +159,8 @@ def _describe_login_asg(snapshot, asg_name, pool_name):
 def _snapshot_cluster(cluster):
     snapshot = {
         "cluster": cluster,
-        "ec2": boto3.client("ec2", region_name=cluster.region),
         "autoscaling": boto3.client("autoscaling", region_name=cluster.region),
         "login_asgs": [],
-        "instance_ids": set(),
     }
     compute_status = cluster.describe_compute_fleet()["status"]
     if compute_status not in _COMPUTE_FLEET_TERMINAL_STATES:
@@ -231,29 +169,21 @@ def _snapshot_cluster(cluster):
             f"found {compute_status}"
         )
     snapshot["compute_status"] = compute_status
-    snapshot["instance_ids"].update(_get_compute_instance_ids(snapshot))
 
     for pool in cluster.config.get("LoginNodes", {}).get("Pools", []):
-        pool_name = pool["Name"]
-        asg_name = f"{cluster.name}-{pool_name}-AutoScalingGroup"
-        group = _describe_login_asg(snapshot, asg_name, pool_name)
         asg_snapshot = {
-            "pool_name": pool_name,
-            "AutoScalingGroupName": group["AutoScalingGroupName"],
-            "MinSize": group["MinSize"],
-            "MaxSize": group["MaxSize"],
-            "DesiredCapacity": group["DesiredCapacity"],
-            "instance_ids": {instance["InstanceId"] for instance in group.get("Instances", [])},
+            "pool_name": pool["Name"],
+            "AutoScalingGroupName": f"{cluster.name}-{pool['Name']}-AutoScalingGroup",
         }
-        snapshot["instance_ids"].update(asg_snapshot["instance_ids"])
+        group = _describe_login_asg(snapshot, asg_snapshot)
+        asg_snapshot.update({key: group[key] for key in ("MinSize", "MaxSize", "DesiredCapacity")})
         snapshot["login_asgs"].append(asg_snapshot)
 
     logging.info(
-        "Snapshotted cluster %s in %s: compute fleet %s, %d compute/login instances, %d login pools",
+        "Snapshotted cluster %s in %s: compute fleet %s, %d login pools",
         cluster.name,
         cluster.region,
         compute_status,
-        len(snapshot["instance_ids"]),
         len(snapshot["login_asgs"]),
     )
     return snapshot
@@ -275,6 +205,17 @@ def _wait_for_compute_status(snapshot, expected_status):
     return _poll()
 
 
+def _login_asg_instance_ids(snapshot, asg_snapshot, lifecycle_state=None):
+    """Return the instances of a login pool's Auto Scaling group, optionally only those in a given state."""
+    instances = _describe_login_asg(snapshot, asg_snapshot).get("Instances", [])
+    return sorted(
+        instance["InstanceId"]
+        for instance in instances
+        if lifecycle_state is None
+        or (instance["LifecycleState"] == lifecycle_state and instance["HealthStatus"] == "Healthy")
+    )
+
+
 def _wait_for_consumers_terminated(snapshots):
     @retry(
         wait_fixed=seconds(15),
@@ -284,53 +225,36 @@ def _wait_for_consumers_terminated(snapshots):
     def _poll():
         consumers_remain = False
         for snapshot in snapshots:
-            cluster = snapshot["cluster"]
-            compute_instance_ids = _get_compute_instance_ids(snapshot)
-            snapshot["instance_ids"].update(compute_instance_ids)
+            compute_instance_ids = _compute_instance_ids(snapshot["cluster"])
             if compute_instance_ids:
                 consumers_remain = True
                 logging.info(
                     "Waiting for cluster %s compute instances to terminate: %s",
-                    cluster.name,
-                    sorted(compute_instance_ids),
+                    snapshot["cluster"].name,
+                    compute_instance_ids,
                 )
 
             for asg_snapshot in snapshot["login_asgs"]:
-                group = _describe_login_asg(
-                    snapshot, asg_snapshot["AutoScalingGroupName"], asg_snapshot["pool_name"]
-                )
-                login_instance_ids = {instance["InstanceId"] for instance in group.get("Instances", [])}
-                asg_snapshot["instance_ids"].update(login_instance_ids)
-                snapshot["instance_ids"].update(login_instance_ids)
+                login_instance_ids = _login_asg_instance_ids(snapshot, asg_snapshot)
                 if login_instance_ids:
                     consumers_remain = True
                     logging.info(
                         "Waiting for login Auto Scaling group %s instances to terminate: %s",
                         asg_snapshot["AutoScalingGroupName"],
-                        sorted(login_instance_ids),
+                        login_instance_ids,
                     )
         return consumers_remain
 
     _poll()
 
-    for snapshot in snapshots:
-        instance_ids = sorted(snapshot["instance_ids"])
-        if not instance_ids:
-            continue
-        logging.info("Verifying captured compute/login instances terminated for cluster %s", snapshot["cluster"].name)
-        for offset in range(0, len(instance_ids), 1000):
-            snapshot["ec2"].get_waiter("instance_terminated").wait(
-                InstanceIds=instance_ids[offset : offset + 1000],
-                WaiterConfig={"Delay": 15, "MaxAttempts": 40},
-            )
-
 
 def _pause_consumers(snapshots):
     for snapshot in snapshots:
-        cluster = snapshot["cluster"]
-        if snapshot["compute_status"] == "RUNNING":
-            logging.info("Requesting compute fleet stop for cluster %s", cluster.name)
-            cluster.stop(wait_stopped=False)
+        if snapshot["compute_status"] != "STOPPED":
+            # A PROTECTED fleet is stopped as well: protected mode disables the queues but leaves the compute
+            # instances of the healthy compute resources running, and those keep the old Slurm mounted.
+            logging.info("Requesting compute fleet stop for cluster %s", snapshot["cluster"].name)
+            snapshot["cluster"].stop()
 
     for snapshot in snapshots:
         for asg_snapshot in snapshot["login_asgs"]:
@@ -342,76 +266,10 @@ def _pause_consumers(snapshots):
             )
 
     for snapshot in snapshots:
-        if snapshot["compute_status"] == "RUNNING":
+        if snapshot["compute_status"] != "STOPPED":
             _wait_for_compute_status(snapshot, "STOPPED")
     _wait_for_consumers_terminated(snapshots)
     logging.info("All non-head-node consumers are stopped")
-
-
-def _login_asg_capacity_matches(group, asg_snapshot):
-    return (
-        group["MinSize"] == asg_snapshot["MinSize"]
-        and group["MaxSize"] == asg_snapshot["MaxSize"]
-        and group["DesiredCapacity"] == asg_snapshot["DesiredCapacity"]
-    )
-
-
-def _restore_login_asg_capacity(snapshot, asg_snapshot):
-    @retry(
-        wait_fixed=seconds(15),
-        stop_max_delay=minutes(_CAPACITY_WAIT_MINUTES),
-        retry_on_exception=lambda error: True,
-        retry_on_result=lambda restored: not restored,
-    )
-    def _request():
-        group = _describe_login_asg(snapshot, asg_snapshot["AutoScalingGroupName"], asg_snapshot["pool_name"])
-        if _login_asg_capacity_matches(group, asg_snapshot):
-            return True
-
-        logging.info(
-            "Restoring login Auto Scaling group %s capacity to min=%d max=%d desired=%d",
-            asg_snapshot["AutoScalingGroupName"],
-            asg_snapshot["MinSize"],
-            asg_snapshot["MaxSize"],
-            asg_snapshot["DesiredCapacity"],
-        )
-        snapshot["autoscaling"].update_auto_scaling_group(
-            AutoScalingGroupName=asg_snapshot["AutoScalingGroupName"],
-            MinSize=asg_snapshot["MinSize"],
-            MaxSize=asg_snapshot["MaxSize"],
-            DesiredCapacity=asg_snapshot["DesiredCapacity"],
-        )
-        group = _describe_login_asg(snapshot, asg_snapshot["AutoScalingGroupName"], asg_snapshot["pool_name"])
-        return _login_asg_capacity_matches(group, asg_snapshot)
-
-    return _request()
-
-
-def _request_compute_running(snapshot):
-    cluster = snapshot["cluster"]
-
-    @retry(
-        wait_fixed=seconds(15),
-        stop_max_delay=minutes(_CAPACITY_WAIT_MINUTES),
-        retry_on_exception=lambda error: not isinstance(error, _UnexpectedComputeFleetStatusError),
-        retry_on_result=lambda requested: not requested,
-    )
-    def _request():
-        status = cluster.describe_compute_fleet()["status"]
-        logging.info("Cluster %s compute fleet status is %s while requesting RUNNING", cluster.name, status)
-        if status == "RUNNING" or status in _COMPUTE_FLEET_START_TRANSITIONS:
-            return True
-        if status == "STOPPED":
-            logging.info("Requesting compute fleet start for cluster %s", cluster.name)
-            cluster.start(wait_running=False)
-            return True
-        if status in _COMPUTE_FLEET_STOP_TRANSITIONS:
-            return False
-        raise _UnexpectedComputeFleetStatusError(
-            f"Cannot restore cluster {cluster.name} compute fleet to RUNNING from {status}"
-        )
-
-    return _request()
 
 
 def _wait_for_login_asg_restored(snapshot, asg_snapshot):
@@ -420,37 +278,19 @@ def _wait_for_login_asg_restored(snapshot, asg_snapshot):
     @retry(
         wait_fixed=seconds(15),
         stop_max_delay=minutes(_CAPACITY_WAIT_MINUTES),
-        retry_on_result=lambda instance_ids: instance_ids is None,
+        retry_on_result=lambda instance_ids: len(instance_ids) < desired_capacity,
     )
     def _poll():
-        group = _describe_login_asg(snapshot, asg_snapshot["AutoScalingGroupName"], asg_snapshot["pool_name"])
-        instances = group.get("Instances", [])
-        ready = (
-            _login_asg_capacity_matches(group, asg_snapshot)
-            and len(instances) == desired_capacity
-            and all(
-                instance.get("LifecycleState") == "InService" and instance.get("HealthStatus") == "Healthy"
-                for instance in instances
-            )
-        )
+        instance_ids = _login_asg_instance_ids(snapshot, asg_snapshot, lifecycle_state="InService")
         logging.info(
-            "Login Auto Scaling group %s has %d/%d ready instances",
+            "Login Auto Scaling group %s has %d/%d instances in service",
             asg_snapshot["AutoScalingGroupName"],
-            len(instances) if ready else 0,
+            len(instance_ids),
             desired_capacity,
         )
-        return [instance["InstanceId"] for instance in instances] if ready else None
+        return instance_ids
 
-    instance_ids = _poll()
-    if not instance_ids:
-        logging.info("Login Auto Scaling group %s capacity is restored", asg_snapshot["AutoScalingGroupName"])
-        return
-
-    logging.info("Waiting for restored login instances to pass EC2 status checks: %s", instance_ids)
-    snapshot["ec2"].get_waiter("instance_status_ok").wait(
-        InstanceIds=instance_ids,
-        WaiterConfig={"Delay": 30, "MaxAttempts": 30},
-    )
+    _poll()
 
 
 def _restore_consumers(snapshots):
@@ -458,16 +298,33 @@ def _restore_consumers(snapshots):
 
     for snapshot in snapshots:
         for asg_snapshot in snapshot["login_asgs"]:
-            try:
-                _restore_login_asg_capacity(snapshot, asg_snapshot)
-            except Exception as error:
-                errors.append((f"restore login Auto Scaling group {asg_snapshot['AutoScalingGroupName']}", error))
+            logging.info(
+                "Restoring login Auto Scaling group %s capacity to min=%d max=%d desired=%d",
+                asg_snapshot["AutoScalingGroupName"],
+                asg_snapshot["MinSize"],
+                asg_snapshot["MaxSize"],
+                asg_snapshot["DesiredCapacity"],
+            )
+            snapshot["autoscaling"].update_auto_scaling_group(
+                AutoScalingGroupName=asg_snapshot["AutoScalingGroupName"],
+                MinSize=asg_snapshot["MinSize"],
+                MaxSize=asg_snapshot["MaxSize"],
+                DesiredCapacity=asg_snapshot["DesiredCapacity"],
+            )
 
         if snapshot["compute_status"] == "RUNNING":
             try:
-                _request_compute_running(snapshot)
+                snapshot["cluster"].start()
             except Exception as error:
                 errors.append((f"start compute fleet for cluster {snapshot['cluster'].name}", error))
+        elif snapshot["compute_status"] != "STOPPED":
+            # PROTECTED is not a status the compute fleet API accepts, so it cannot be requested back. Leaving the
+            # fleet STOPPED is reported here rather than silently, because it changes what the caller sees next.
+            logging.warning(
+                "Cluster %s compute fleet was %s before the maintenance and is left STOPPED",
+                snapshot["cluster"].name,
+                snapshot["compute_status"],
+            )
 
     for snapshot in snapshots:
         if snapshot["compute_status"] == "RUNNING":
@@ -485,11 +342,6 @@ def _restore_consumers(snapshots):
     return errors
 
 
-def _restore_error_message(errors):
-    details = "\n".join(f"- {operation}: {error}" for operation, error in errors)
-    return f"Failed to fully restore cluster consumers:\n{details}"
-
-
 @contextmanager
 def stopped_shared_slurm_consumers(*clusters):
     """Temporarily stop all compute fleets and login pools shared by a maintenance operation."""
@@ -497,7 +349,9 @@ def stopped_shared_slurm_consumers(*clusters):
     mutation_started = False
     primary_error = None
     try:
-        unique_clusters = _deduplicate_clusters(clusters)
+        # A cluster passed twice, for example because two head nodes share an external slurmdbd, must only be
+        # snapshotted and restored once.
+        unique_clusters = {(cluster.name, cluster.region): cluster for cluster in clusters}.values()
         snapshots = [_snapshot_cluster(cluster) for cluster in unique_clusters]
         mutation_started = True
         _pause_consumers(snapshots)
@@ -509,7 +363,8 @@ def stopped_shared_slurm_consumers(*clusters):
         if mutation_started:
             restoration_errors = _restore_consumers(snapshots)
             if restoration_errors:
-                message = _restore_error_message(restoration_errors)
+                details = "\n".join(f"- {operation}: {error}" for operation, error in restoration_errors)
+                message = f"Failed to fully restore cluster consumers:\n{details}"
                 if primary_error is not None:
                     logging.error("%s; preserving the original failure: %s", message, primary_error)
                 else:
@@ -527,6 +382,12 @@ def get_slurm_version(executor):
         if result.return_code == 0 and result.stdout.strip():
             return result.stdout.strip().splitlines()[0]
     return None
+
+
+def slurm_major_version(version):
+    """Return the major.minor Slurm release of a version string such as "slurm 24.11.6", or None."""
+    match = re.search(r"\d+\.\d+", version or "")
+    return match.group(0) if match else None
 
 
 def _assert_backup_archive_readable(executor, pattern):
@@ -567,29 +428,81 @@ def assert_upgrade_backups_readable(executor):
         _assert_backup_archive_readable(executor, pattern)
 
 
-def install_test_software(executor, region, stage_source_archive=False):
-    """Download the installer from us-east-1 and run it on the target host.
+def _log_file_size(executor, path):
+    """Return the current size of a root-owned log file, so a later check can be scoped to what is appended after."""
+    result = executor.run_remote_command(f"sudo wc -c {path}", raise_on_error=False, hide=True)
+    return int(result.stdout.split()[0]) if result.return_code == 0 else 0
+
+
+def _report_slurmctld_log_of_install(executor, offset):
+    """Report what slurmctld logged while the installer replaced Slurm under it.
+
+    Error-level lines are expected here rather than exceptional: every daemon of the new Slurm re-validates the
+    slurm.conf written by the ParallelCluster release under test, which is what known_harmless_slurm_daemon_errors
+    exists for. They are logged instead of asserted on because a "defunct" or "obsolete" parameter reported here
+    is a finding about the release, not a failure of the upgrade. A fatal line is different: it means the daemon
+    gave up, which no ParallelCluster release may cause.
+    """
+    log = executor.run_remote_command(
+        f"sudo tail -c +{offset + 1} {_SLURMCTLD_LOG}", raise_on_error=False, hide=True
+    ).stdout
+    error_lines = [line for line in log.splitlines() if re.search(r"error|fatal|defunct|obsolete", line, re.I)]
+    if error_lines:
+        logging.warning(
+            "slurmctld reported %d error-level lines while Slurm was being replaced:\n%s",
+            len(error_lines),
+            "\n".join(error_lines),
+        )
+    assert_that([line for line in error_lines if "fatal" in line.lower()]).described_as(
+        "fatal slurmctld messages logged during the install"
+    ).is_empty()
+
+
+def install_test_software(executor, stage_source_archive=False, assert_controller=True):
+    """Download the installer from us-east-1, run it on the target host and verify what it left behind.
 
     Set stage_source_archive when the target host cannot read the artifact bucket itself, see _stage_source_archive.
+    Clear assert_controller for a host that runs no slurmctld, such as an external slurmdbd instance.
     """
     script_path = _download_software_installer_script()
     if stage_source_archive:
         _stage_source_archive(executor, script_path)
+    target_version = _installer_constant(Path(script_path).read_text(encoding="utf-8"), "TARGET_RUNTIME_VERSION")
     version_before = get_slurm_version(executor)
+    slurmctld_log_size = _log_file_size(executor, _SLURMCTLD_LOG)
     result = executor.run_remote_script(script_path, run_as_root=True, timeout=3600, pty=False)
+
     version_after = get_slurm_version(executor)
-    logging.info("Slurm version after the install: %s (was %s before)", version_after, version_before)
+    logging.info(
+        "Slurm version after the install: %s (was %s before), a %s",
+        version_after,
+        version_before,
+        (
+            "same-major reinstall"
+            if slurm_major_version(version_before) == slurm_major_version(version_after)
+            else "cross-major upgrade"
+        ),
+    )
+    # The installer checks the version it installed itself, but only against its own constant. Checking it here as
+    # well is what fails a run whose installer targets a different version than the run is meant to exercise, for
+    # example because the mutable bucket object was replaced between two runs of the same suite.
+    assert_that(version_after).described_as("Slurm version reported by the host after the install").contains(
+        target_version
+    )
     if version_after != version_before:
         # Only when the installer actually replaced something: it skips the backups, and everything else, when
         # the target version is already installed.
         assert_upgrade_backups_readable(executor)
+    if assert_controller:
+        assert_slurm_controller_healthy(executor)
+        _report_slurmctld_log_of_install(executor, slurmctld_log_size)
     return result
 
 
-def install_test_software_with_stopped_consumers(executor, region, *clusters):
+def install_test_software_with_stopped_consumers(executor, *clusters):
     """Run the test software installer while the clusters have no compute or login consumers."""
     with stopped_shared_slurm_consumers(*clusters):
-        return install_test_software(executor, region)
+        return install_test_software(executor)
 
 
 def assert_slurm_controller_healthy(executor):
@@ -675,27 +588,27 @@ def snapshot_slurm_state(remote_command_executor, scheduler_commands):
 
     nodes = scheduler_commands.get_compute_nodes(all_nodes=True)
     if nodes:
-        # Best effort: the reservation widens the coverage to another StateSaveLocation record type, but it is
-        # not worth failing a test over, for example if the chosen node cannot be reserved right now.
         remote_command_executor.run_remote_command(
             f"sudo -i scontrol delete ReservationName={_STATE_CHECK_RESERVATION}", raise_on_error=False
         )
+        # Not best effort: a reservation covers a StateSaveLocation record type the held job does not, and a
+        # controller that cannot create one is already a finding, whether the upgrade is to blame or not.
         created = remote_command_executor.run_remote_command(
             f"sudo -i scontrol create reservation ReservationName={_STATE_CHECK_RESERVATION} "
             f"user=$(id -un) starttime={_STATE_CHECK_RESERVATION_START} duration=1:00:00 "
             f"flags=maint,ignore_jobs nodes={nodes[0]}",
             raise_on_error=False,
         )
-        if created.return_code == 0:
-            reservation_details = remote_command_executor.run_remote_command(
-                f"scontrol --oneliner show ReservationName={_STATE_CHECK_RESERVATION}"
-            ).stdout
-            snapshot["reservation"] = {
-                "nodes": _scontrol_field(reservation_details, "Nodes"),
-                "start_time": _scontrol_field(reservation_details, "StartTime"),
-            }
-        else:
-            logging.warning("Unable to reserve node %s, skipping the reservation check: %s", nodes[0], created.stderr)
+        assert_that(created.return_code).described_as(
+            f"creation of reservation {_STATE_CHECK_RESERVATION} on node {nodes[0]}: {_failed_command_output(created)}"
+        ).is_equal_to(0)
+        reservation_details = remote_command_executor.run_remote_command(
+            f"scontrol --oneliner show ReservationName={_STATE_CHECK_RESERVATION}"
+        ).stdout
+        snapshot["reservation"] = {
+            "nodes": _scontrol_field(reservation_details, "Nodes"),
+            "start_time": _scontrol_field(reservation_details, "StartTime"),
+        }
     else:
         logging.info("No compute node is configured, skipping the reservation part of the Slurm state snapshot")
 

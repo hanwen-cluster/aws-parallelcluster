@@ -13,7 +13,6 @@ from utils import to_snake_case
 from tests.cloudwatch_logging import cloudwatch_logging_boto3_utils as cw_utils
 from tests.common.assertions import assert_no_defunct_slurm_config_params, known_defunct_slurm_config_params
 from tests.common.software_installer import (
-    assert_slurm_controller_healthy,
     assert_slurm_state_preserved,
     install_test_software,
     install_test_software_with_stopped_consumers,
@@ -387,8 +386,7 @@ def test_slurm_accounting(
     slurmdbd_log_line_count = _get_slurmdbd_log_line_count(remote_command_executor)
     registered_clusters = _get_registered_accounting_clusters(remote_command_executor)
 
-    install_test_software_with_stopped_consumers(remote_command_executor, region, cluster)
-    assert_slurm_controller_healthy(remote_command_executor)
+    install_test_software_with_stopped_consumers(remote_command_executor, cluster)
 
     remote_command_executor = RemoteCommandExecutor(cluster)
     scheduler_commands = scheduler_commands_factory(remote_command_executor)
@@ -397,6 +395,9 @@ def test_slurm_accounting(
     _assert_no_upgrade_failures_in_slurmdbd_log(remote_command_executor, slurmdbd_log_line_count)
     assert_slurm_state_preserved(remote_command_executor, slurm_state_snapshot)
     _assert_preexisting_job_records_readable(scheduler_commands, [pre_upgrade_job_id])
+    # The user and association rows live in the same database slurmdbd just converted, so they are read back
+    # with the same check used before the upgrade.
+    _test_slurmdb_users(remote_command_executor, scheduler_commands, test_resources_dir)
     _test_jobs_get_recorded(scheduler_commands)
     _test_slurm_accounting_password(remote_command_executor)
     _assert_registered_clusters_preserved(remote_command_executor, registered_clusters)
@@ -404,6 +405,9 @@ def test_slurm_accounting(
         _test_slurm_accounting_database_name(remote_command_executor, custom_database_name)
         _test_cluster_registered_with_custom_name(remote_command_executor, custom_cluster_name)
     assert_no_defunct_slurm_config_params(remote_command_executor, ignore_patterns=known_defunct_slurm_config_params())
+    # Last, because it reconfigures SSL and restarts slurmdbd: the install recompiles slurmdbd against the
+    # system MySQL client libraries, so the TLS connection to the database has to be re-verified.
+    _test_require_server_identity(remote_command_executor, test_resources_dir, region)
 
 
 @pytest.mark.usefixtures("os", "instance", "scheduler")
@@ -465,39 +469,46 @@ def test_slurm_accounting_external_dbd(
     # release than every slurmctld talking to it.
     with stopped_shared_slurm_consumers(cluster, cluster_2):
         # The external slurmdbd instance role cannot read the artifact bucket, so the source archive is uploaded
-        # to it rather than downloaded by the installer.
-        install_test_software(slurmdbd_node_remote_command_executor, region, stage_source_archive=True)
-        install_test_software(headnode_remote_command_executor_1, region)
-        install_test_software(headnode_remote_command_executor_2, region)
-
-    assert_slurm_controller_healthy(headnode_remote_command_executor_1)
-    assert_slurm_controller_healthy(headnode_remote_command_executor_2)
-    scheduler_commands_1 = scheduler_commands_factory(headnode_remote_command_executor_1)
-    scheduler_commands_2 = scheduler_commands_factory(headnode_remote_command_executor_2)
+        # to it rather than downloaded by the installer. There is no slurmctld on that host to check either.
+        install_test_software(
+            slurmdbd_node_remote_command_executor, stage_source_archive=True, assert_controller=False
+        )
+        # This is the only moment a new slurmdbd serves an old slurmctld, which is the combination Slurm
+        # supports and customers go through, so it is verified before the controllers are upgraded.
+        _test_that_slurmdbd_is_running(headnode_remote_command_executor_1)
+        install_test_software(headnode_remote_command_executor_1)
+        install_test_software(headnode_remote_command_executor_2)
 
     _test_successful_startup_in_log(slurmdbd_node_remote_command_executor, since_line=slurmdbd_log_line_count)
     _assert_no_upgrade_failures_in_slurmdbd_log(slurmdbd_node_remote_command_executor, slurmdbd_log_line_count)
-    _test_that_slurmdbd_is_running(headnode_remote_command_executor_1)
-    _test_that_slurmdbd_is_running(headnode_remote_command_executor_2)
     assert_slurm_state_preserved(headnode_remote_command_executor_1, slurm_state_snapshot_1)
     assert_slurm_state_preserved(headnode_remote_command_executor_2, slurm_state_snapshot_2)
+
+    # The per-cluster check is re-run as it is rather than a hand-picked subset of it: it verifies slurmdbd is
+    # reachable from the head node, that the TLS server identity check still passes against the recompiled
+    # slurmdbd, that new jobs are recorded and that slurm.conf has no defunct parameters.
+    logging.info("Re-testing both clusters after the upgrade")
+    post_upgrade_job_id_1 = _check_cluster_external_dbd(
+        cluster, config_params, region, scheduler_commands_factory, test_resources_dir
+    )
+    post_upgrade_job_id_2 = _check_cluster_external_dbd(
+        cluster_2, config_params, region, scheduler_commands_factory, test_resources_dir
+    )
+
     # The upgraded slurmdbd must still serve the job records written before the upgrade, both to the cluster
     # that submitted them and to the other cluster sharing the same external slurmdbd.
-    _assert_preexisting_job_records_readable(
-        scheduler_commands_1, [pre_upgrade_job_id_1] + inter_cluster_job_ids, clusters=cluster.name
-    )
-    _assert_preexisting_job_records_readable(
-        scheduler_commands_2, [pre_upgrade_job_id_1] + inter_cluster_job_ids, clusters=cluster.name
-    )
-    _assert_preexisting_job_records_readable(scheduler_commands_2, [pre_upgrade_job_id_2], clusters=cluster_2.name)
-    _assert_preexisting_job_records_readable(scheduler_commands_1, [pre_upgrade_job_id_2], clusters=cluster_2.name)
-    job_id_1 = _test_jobs_get_recorded(scheduler_commands_1)
-    job_id_2 = _test_jobs_get_recorded(scheduler_commands_2)
+    scheduler_commands_1 = scheduler_commands_factory(headnode_remote_command_executor_1)
+    scheduler_commands_2 = scheduler_commands_factory(headnode_remote_command_executor_2)
+    for scheduler_commands in (scheduler_commands_1, scheduler_commands_2):
+        _assert_preexisting_job_records_readable(
+            scheduler_commands, [pre_upgrade_job_id_1] + inter_cluster_job_ids, clusters=cluster.name
+        )
+        _assert_preexisting_job_records_readable(scheduler_commands, [pre_upgrade_job_id_2], clusters=cluster_2.name)
     retry(stop_max_attempt_number=30, wait_fixed=seconds(20))(_assert_job_completion_recorded_in_accounting)(
-        job_id_1, scheduler_commands_2, clusters=cluster.name
+        post_upgrade_job_id_1, scheduler_commands_2, clusters=cluster.name
     )
     retry(stop_max_attempt_number=30, wait_fixed=seconds(20))(_assert_job_completion_recorded_in_accounting)(
-        job_id_2, scheduler_commands_1, clusters=cluster_2.name
+        post_upgrade_job_id_2, scheduler_commands_1, clusters=cluster_2.name
     )
 
 

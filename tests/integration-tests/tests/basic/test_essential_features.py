@@ -27,10 +27,7 @@ from tests.common.assertions import (
     wait_instance_replaced_or_terminating,
 )
 from tests.common.mpi_common import _test_mpi
-from tests.common.software_installer import (
-    assert_slurm_controller_healthy,
-    install_test_software_with_stopped_consumers,
-)
+from tests.common.software_installer import install_test_software_with_stopped_consumers
 from tests.common.utils import GPU_JOB_SCRIPT, fetch_instance_slots, run_system_analyzer
 
 
@@ -98,31 +95,25 @@ def test_essential_features(
 
     _test_gpu_workload(cluster, scheduler_commands_factory, test_datadir)
 
-    remote_command_executor = RemoteCommandExecutor(cluster)
-    install_test_software_with_stopped_consumers(remote_command_executor, region, cluster)
-    assert_slurm_controller_healthy(remote_command_executor)
+    install_test_software_with_stopped_consumers(RemoteCommandExecutor(cluster), cluster)
 
-    scheduler_commands = scheduler_commands_factory(remote_command_executor)
-    _test_disable_hyperthreading_settings(
-        remote_command_executor,
-        scheduler_commands,
-        fetch_instance_slots(region, instance),
-        scheduler,
-        hyperthreading_disabled=False,
-        partition="bootstrap-scripts-args",
-        default_threads_per_core=default_threads_per_core,
+    # The checks above are repeated as they are, rather than a hand-picked subset of their internals: the installer
+    # recompiles Slurm against /opt/pmix and replaces /opt/slurm, so a controller that answers scontrol ping is no
+    # proof that srun can still launch a multi-node MPI job or that the hyperthreading settings are still applied.
+    # Reusing them also brings their own assert_no_errors_in_logs and scaling coverage to the upgraded cluster.
+    _test_disable_hyperthreading(
+        cluster, region, instance, scheduler, default_threads_per_core, request, scheduler_commands_factory
     )
     _test_gpu_workload(cluster, scheduler_commands_factory, test_datadir)
-    # The installer recompiles Slurm against /opt/pmix, so PMIx has to be verified again: a controller that
-    # answers scontrol ping is no proof that srun can still launch a multi-node MPI job, which is the most
-    # common workload on these clusters. verify_pmix also asserts the pmix plugin is still listed by srun.
-    _test_mpi(
-        remote_command_executor,
-        fetch_instance_slots(region, instance),
+    _test_mpi_job(
         scheduler,
-        scheduler_commands,
-        num_computes=max_queue_size,
-        verify_pmix=True,
+        region,
+        instance,
+        cluster,
+        test_datadir,
+        scheduler_commands_factory,
+        scaledown_idletime,
+        max_queue_size,
     )
 
 
