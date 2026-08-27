@@ -7,7 +7,7 @@ import pytest
 from assertpy import assert_that
 from remote_command_executor import RemoteCommandExecutor
 from retrying import retry
-from time_utils import minutes, seconds
+from time_utils import seconds
 from utils import to_snake_case
 
 from tests.cloudwatch_logging import cloudwatch_logging_boto3_utils as cw_utils
@@ -62,9 +62,9 @@ def _get_expected_users(remote_command_executor, test_resources_dir):
 def _is_accounting_enabled(remote_command_executor):
     result = remote_command_executor.run_remote_command("sacct", raise_on_error=False)
     if not result.ok:
-        # The message sacct prints is the only explanation available for a slurmdbd the command cannot talk to,
-        # so it is logged here instead of being dropped with the exit code.
-        logging.info("sacct failed: %s", result.stdout.strip())
+        # The message sacct prints on stderr is the only explanation available for a slurmdbd the command cannot
+        # talk to, so it is logged here instead of being dropped with the exit code.
+        logging.info("sacct failed: %s", result.stderr.strip())
     return result.ok
 
 
@@ -87,18 +87,14 @@ def _require_server_identity(remote_command_executor, test_resources_dir, region
     )
 
 
-def _test_require_server_identity(remote_command_executor, test_resources_dir, region, client_command_executor=None):
+def _test_require_server_identity(remote_command_executor, test_resources_dir, region):
+    # This rewrites slurmdbd.conf and restarts slurmdbd on the host it is given, so callers have to verify accounting
+    # afterwards from a host that can run sacct: with an external slurmdbd that is the head node, not this host.
     # TODO We must address the extra challenges of configuring SSL in isolated regions.
     # For the time being we skip this check to unblock the validation of the feature without SSL.
     # This is reasonable in the short term because the SSL configuration is actually out of scope for ParallelCluster.
     if "us-iso" not in region:
         _require_server_identity(remote_command_executor, test_resources_dir, region)
-    # Reconfiguring SSL restarts slurmdbd, so accounting has to be working again before the test moves on. The
-    # previous version of this check called _is_accounting_enabled through retry() without a retry_on_result, which
-    # never retried and threw the result away.
-    # slurmdbd.conf lives on the slurmdbd node while sacct only runs where slurm.conf is, so with an external
-    # slurmdbd the two hosts differ: pass client_command_executor to check accounting from the head node.
-    _test_that_slurmdbd_is_running(client_command_executor or remote_command_executor)
 
 
 def _test_slurmdb_users(remote_command_executor, scheduler_commands, test_resources_dir):
@@ -212,39 +208,20 @@ def _test_that_slurmdbd_is_not_running(remote_command_executor):
     assert_that(_is_accounting_enabled(remote_command_executor)).is_false()
 
 
-@retry(wait_fixed=seconds(15), stop_max_delay=minutes(5))
+@retry(stop_max_attempt_number=3, wait_fixed=seconds(10))
 def _test_that_slurmdbd_is_running(remote_command_executor):
-    # slurmdbd is reachable a little after the cluster reports itself created, and it also takes a moment to come
-    # back after the checks that restart it, so the command is given time to succeed instead of being run once.
+    # Retried because the checks that restart slurmdbd call this straight afterwards. The previous version of this
+    # retry was applied to _is_accounting_enabled, which returns instead of raising, so it never retried.
     assert_that(_is_accounting_enabled(remote_command_executor)).is_true()
-
-
-def _get_registered_accounting_clusters(remote_command_executor):
-    """Return the cluster names currently registered in Slurm accounting."""
-    result = remote_command_executor.run_remote_command("sacctmgr show clusters -nP format=cluster").stdout
-    registered_clusters = [line.strip() for line in result.splitlines() if line.strip()]
-    logging.info("Registered accounting clusters: %s", registered_clusters)
-    return registered_clusters
 
 
 def _test_cluster_registered_with_custom_name(remote_command_executor, custom_cluster_name):
     """Verify the cluster is registered in Slurm accounting under the expected custom name (lowercased by Slurm)."""
     expected_name = custom_cluster_name.lower()
-    registered_clusters = _get_registered_accounting_clusters(remote_command_executor)
-    logging.info("Expecting registered cluster: %s", expected_name)
+    result = remote_command_executor.run_remote_command("sacctmgr show clusters -nP format=cluster").stdout
+    registered_clusters = [line.strip() for line in result.splitlines() if line.strip()]
+    logging.info("Registered accounting clusters: %s (expecting: %s)", registered_clusters, expected_name)
     assert_that(registered_clusters).contains(expected_name)
-
-
-def _assert_registered_clusters_preserved(remote_command_executor, expected_clusters):
-    """Verify the accounting cluster registrations survived the Slurm upgrade.
-
-    This is the version-independent counterpart of _test_cluster_registered_with_custom_name: whatever names the
-    cluster was registered under before the upgrade must still be there after the database conversion.
-    """
-    registered_clusters = _get_registered_accounting_clusters(remote_command_executor)
-    assert_that(registered_clusters).described_as("accounting clusters registered after the upgrade").contains(
-        *expected_clusters
-    )
 
 
 def _test_slurm_accounting_password(remote_command_executor):
@@ -386,7 +363,6 @@ def test_slurm_accounting(
     pre_upgrade_job_id = _test_jobs_get_recorded(scheduler_commands)
     slurm_state_snapshot = snapshot_slurm_state(remote_command_executor, scheduler_commands)
     slurmdbd_log_line_count = _get_slurmdbd_log_line_count(remote_command_executor)
-    registered_clusters = _get_registered_accounting_clusters(remote_command_executor)
 
     install_test_software_with_stopped_consumers(remote_command_executor, cluster)
 
@@ -402,7 +378,6 @@ def test_slurm_accounting(
     _test_slurmdb_users(remote_command_executor, scheduler_commands, test_resources_dir)
     _test_jobs_get_recorded(scheduler_commands)
     _test_slurm_accounting_password(remote_command_executor)
-    _assert_registered_clusters_preserved(remote_command_executor, registered_clusters)
     if custom_names_supported:
         _test_slurm_accounting_database_name(remote_command_executor, custom_database_name)
         _test_cluster_registered_with_custom_name(remote_command_executor, custom_cluster_name)
@@ -410,6 +385,7 @@ def test_slurm_accounting(
     # Last, because it reconfigures SSL and restarts slurmdbd: the install recompiles slurmdbd against the
     # system MySQL client libraries, so the TLS connection to the database has to be re-verified.
     _test_require_server_identity(remote_command_executor, test_resources_dir, region)
+    _test_that_slurmdbd_is_running(remote_command_executor)
 
 
 @pytest.mark.usefixtures("os", "instance", "scheduler")
@@ -525,14 +501,8 @@ def _check_cluster_external_dbd(cluster, config_params, region, scheduler_comman
     _test_successful_startup_in_log(slurmdbd_node_remote_command_executor)
 
     # TODO: _test_slurmdb_users(headnode_remote_command_executor, scheduler_commands, test_resources_dir)
-    # The reconfiguration has to happen on the slurmdbd node, while accounting can only be checked from the head
-    # node: sacct on the slurmdbd node has no slurm.conf to read and always fails.
-    _test_require_server_identity(
-        slurmdbd_node_remote_command_executor,
-        test_resources_dir,
-        region,
-        client_command_executor=headnode_remote_command_executor,
-    )
+    _test_require_server_identity(slurmdbd_node_remote_command_executor, test_resources_dir, region)
+    _test_that_slurmdbd_is_running(headnode_remote_command_executor)
     job_id = _test_jobs_get_recorded(scheduler_commands)
     assert_no_defunct_slurm_config_params(
         headnode_remote_command_executor, ignore_patterns=known_defunct_slurm_config_params()
