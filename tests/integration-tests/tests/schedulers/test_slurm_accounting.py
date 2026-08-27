@@ -87,7 +87,7 @@ def _require_server_identity(remote_command_executor, test_resources_dir, region
     )
 
 
-def _test_require_server_identity(remote_command_executor, test_resources_dir, region):
+def _test_require_server_identity(remote_command_executor, test_resources_dir, region, client_command_executor=None):
     # TODO We must address the extra challenges of configuring SSL in isolated regions.
     # For the time being we skip this check to unblock the validation of the feature without SSL.
     # This is reasonable in the short term because the SSL configuration is actually out of scope for ParallelCluster.
@@ -96,7 +96,9 @@ def _test_require_server_identity(remote_command_executor, test_resources_dir, r
     # Reconfiguring SSL restarts slurmdbd, so accounting has to be working again before the test moves on. The
     # previous version of this check called _is_accounting_enabled through retry() without a retry_on_result, which
     # never retried and threw the result away.
-    _test_that_slurmdbd_is_running(remote_command_executor)
+    # slurmdbd.conf lives on the slurmdbd node while sacct only runs where slurm.conf is, so with an external
+    # slurmdbd the two hosts differ: pass client_command_executor to check accounting from the head node.
+    _test_that_slurmdbd_is_running(client_command_executor or remote_command_executor)
 
 
 def _test_slurmdb_users(remote_command_executor, scheduler_commands, test_resources_dir):
@@ -523,10 +525,14 @@ def _check_cluster_external_dbd(cluster, config_params, region, scheduler_comman
     _test_successful_startup_in_log(slurmdbd_node_remote_command_executor)
 
     # TODO: _test_slurmdb_users(headnode_remote_command_executor, scheduler_commands, test_resources_dir)
-    _test_require_server_identity(slurmdbd_node_remote_command_executor, test_resources_dir, region)
-    # The check above restarts slurmdbd on its own node, so the head node has to see accounting working again
-    # before jobs are submitted.
-    _test_that_slurmdbd_is_running(headnode_remote_command_executor)
+    # The reconfiguration has to happen on the slurmdbd node, while accounting can only be checked from the head
+    # node: sacct on the slurmdbd node has no slurm.conf to read and always fails.
+    _test_require_server_identity(
+        slurmdbd_node_remote_command_executor,
+        test_resources_dir,
+        region,
+        client_command_executor=headnode_remote_command_executor,
+    )
     job_id = _test_jobs_get_recorded(scheduler_commands)
     assert_no_defunct_slurm_config_params(
         headnode_remote_command_executor, ignore_patterns=known_defunct_slurm_config_params()
