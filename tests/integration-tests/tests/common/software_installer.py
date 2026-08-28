@@ -48,7 +48,7 @@ _STATE_CHECK_RESERVATION_START = "now+7days"
 # configuration, which used to make this reservation disappear a couple of minutes after the compute fleet came
 # back up, without a trace in slurmctld.log.
 _CLUSTERMGTD_LOG = "/var/log/parallelcluster/clustermgtd"
-_SLURM_VERSION_COMMANDS = ("sinfo --version", "/opt/slurm/sbin/slurmdbd -V", "sacctmgr --version")
+_SLURM_VERSION_COMMANDS = ("sinfo --version", "sudo -n /opt/slurm/sbin/slurmdbd -V", "sacctmgr --version")
 _SLURM_CONF = "/opt/slurm/etc/slurm.conf"
 _SLURMCTLD_LOG = "/var/log/slurmctld.log"
 _INSTALL_BACKUP_GLOB = "/opt/slurm_backup_*.tar.gz"
