@@ -53,6 +53,22 @@ _SLURM_CONF = "/opt/slurm/etc/slurm.conf"
 _SLURMCTLD_LOG = "/var/log/slurmctld.log"
 _INSTALL_BACKUP_GLOB = "/opt/slurm_backup_*.tar.gz"
 _STATE_BACKUP_GLOB = "/opt/slurm_state_backup_*.tar.gz"
+_SLURM_PREFIX_PARENT = "/opt"
+_SLURM_PREFIX_NAME = "slurm"
+_SUPERVISORCTL_GLOB = "/opt/parallelcluster/pyenv/versions/*/envs/cookbook_virtualenv/bin/supervisorctl"
+# The order daemons are stopped in, and started in reverse: the ParallelCluster daemons go down first because
+# clustermgtd treats an unreachable slurmctld as a node failure, and slurmdbd comes up before slurmctld because
+# Slurm requires it to be at the same major version or higher.
+_PARALLELCLUSTER_DAEMONS = ("clusterstatusmgtd", "clustermgtd")
+_SLURM_SERVICES = ("slurmrestd", "slurmctld", "slurmdbd")
+_CHEF_CACHE_DIR = "/etc/chef/local-mode-cache/cache"
+_ROLLBACK_ASIDE_SUFFIX = "_rollback_aside"
+_ACCOUNTING_DATABASE_SCRIPT = Path(__file__).parent / "data" / "slurm_accounting_database.sh"
+# Kept in step with the default backup path of the script above.
+_ACCOUNTING_BACKUP_GLOB = "/opt/slurm_accounting_backup_*.sql.gz"
+# Dumping and restoring the accounting database of a long lived cluster is minutes of work, and it runs
+# against a database that may be scaling up while it does, so it gets the same budget as the build itself.
+_ACCOUNTING_DATABASE_TIMEOUT = 3600
 
 
 def _artifact_region():
@@ -406,14 +422,20 @@ def slurm_major_version(version):
     return match.group(0) if match else None
 
 
-def _assert_backup_archive_readable(executor, pattern):
-    """Assert the newest archive matching a glob exists and can be listed by tar."""
+def _newest_backup_archive(executor, pattern):
+    """Return the path of the newest archive matching a glob on the target host."""
     newest = executor.run_remote_command(f"ls -1t {pattern} | head -n 1", raise_on_error=False, hide=True)
     assert_that(newest.return_code).described_as(
-        f"the installer left no backup archive matching {pattern}: {newest.stderr}"
+        f"no backup archive matches {pattern}: {newest.stderr}"
     ).is_equal_to(0)
     archive = newest.stdout.strip()
     assert_that(archive).described_as(f"newest backup archive matching {pattern}").is_not_empty()
+    return archive
+
+
+def _assert_backup_archive_readable(executor, pattern):
+    """Assert the newest archive matching a glob exists and can be listed by tar."""
+    archive = _newest_backup_archive(executor, pattern)
 
     # Listing the archive proves it is a valid gzip stream with contents, which "the file exists" does not: a
     # backup truncated by a full disk looks identical until someone actually needs to restore it.
@@ -450,8 +472,8 @@ def _log_file_size(executor, path):
     return int(result.stdout.split()[0]) if result.return_code == 0 else 0
 
 
-def _report_slurmctld_log_of_install(executor, offset):
-    """Report what slurmctld logged while the installer replaced Slurm under it.
+def _report_slurmctld_log_of_replacement(executor, offset, operation):
+    """Report what slurmctld logged while Slurm was replaced under it, by the installer or by a rollback.
 
     Error-level lines are expected here rather than exceptional: every daemon of the new Slurm re-validates the
     slurm.conf written by the ParallelCluster release under test, which is what known_harmless_slurm_daemon_errors
@@ -465,12 +487,13 @@ def _report_slurmctld_log_of_install(executor, offset):
     error_lines = [line for line in log.splitlines() if re.search(r"error|fatal|defunct|obsolete", line, re.I)]
     if error_lines:
         logging.warning(
-            "slurmctld reported %d error-level lines while Slurm was being replaced:\n%s",
+            "slurmctld reported %d error-level lines during the %s:\n%s",
             len(error_lines),
+            operation,
             "\n".join(error_lines),
         )
     assert_that([line for line in error_lines if "fatal" in line.lower()]).described_as(
-        "fatal slurmctld messages logged during the install"
+        f"fatal slurmctld messages logged during the {operation}"
     ).is_empty()
 
 
@@ -509,7 +532,7 @@ def install_test_software(executor, assert_controller=True):
         assert_upgrade_backups_readable(executor)
     if assert_controller:
         assert_slurm_controller_healthy(executor)
-        _report_slurmctld_log_of_install(executor, slurmctld_log_size)
+        _report_slurmctld_log_of_replacement(executor, slurmctld_log_size, "install")
     return result
 
 
@@ -717,6 +740,287 @@ def assert_slurm_state_preserved(remote_command_executor, snapshot):
         )
 
     remote_command_executor.run_remote_command(f"scancel {held_job_id}", raise_on_error=False)
+
+
+def _run_checked(executor, command, description, sudo=True):
+    """Run a remote command that must succeed and return its stripped stdout."""
+    result = executor.run_remote_command(
+        f"sudo {command}" if sudo else command, raise_on_error=False, hide=True
+    )
+    assert_that(result.return_code).described_as(f"{description}: {_failed_command_output(result)}").is_equal_to(0)
+    return result.stdout.strip()
+
+
+def _supervisorctl_path(executor):
+    """Return the supervisorctl of the cookbook virtual environment, which controls the ParallelCluster daemons."""
+    paths = _run_checked(
+        executor, f"ls -1 {_SUPERVISORCTL_GLOB}", "the cookbook supervisorctl of the target host", sudo=False
+    ).split()
+    assert_that(paths).described_as(f"supervisorctl binaries matching {_SUPERVISORCTL_GLOB}").is_length(1)
+    return paths[0]
+
+
+def _service_exists(executor, service):
+    """Return whether a systemd service is installed on the target host.
+
+    slurmrestd is only present when the cluster enables the REST API, and slurmdbd only runs on a head node whose
+    cluster keeps its accounting database locally, so neither can be stopped unconditionally.
+    """
+    return (
+        executor.run_remote_command(f"systemctl cat {service}.service", raise_on_error=False, hide=True).return_code
+        == 0
+    )
+
+
+def _parallelcluster_daemons(executor, supervisorctl):
+    """Return the ParallelCluster daemons of _PARALLELCLUSTER_DAEMONS supervisord runs on this host.
+
+    The names are read back from supervisord rather than used as they are, so that a supervisord that cannot be
+    reached fails here instead of turning every stop and start below into a silent no-op.
+    """
+    # supervisorctl exits non-zero as soon as one program is not RUNNING, so the exit code says nothing here.
+    status = executor.run_remote_command(f"sudo {supervisorctl} status", raise_on_error=False, hide=True).stdout
+    known = {line.split()[0] for line in status.splitlines() if line.strip()}
+    daemons = [daemon for daemon in _PARALLELCLUSTER_DAEMONS if daemon in known]
+    assert_that(daemons).described_as(
+        f"ParallelCluster daemons known to supervisord, which reported: {status}"
+    ).is_length(len(_PARALLELCLUSTER_DAEMONS))
+    return daemons
+
+
+def _stop_slurm_stack(executor, supervisorctl, daemons):
+    for daemon in daemons:
+        # supervisorctl reports a program that is already down as an error, so the state is asserted rather than
+        # the exit code: what matters is that the daemon is not running while the binaries are replaced.
+        executor.run_remote_command(f"sudo {supervisorctl} stop {daemon}", raise_on_error=False, hide=True)
+        status = executor.run_remote_command(
+            f"sudo {supervisorctl} status {daemon}", raise_on_error=False, hide=True
+        ).stdout
+        assert_that(status).described_as(f"status of {daemon} after stopping it").does_not_contain("RUNNING")
+
+    for service in _SLURM_SERVICES:
+        if _service_exists(executor, service):
+            _run_checked(executor, f"systemctl stop {service}", f"stop of {service}")
+
+
+def _start_slurm_stack(executor, supervisorctl, daemons):
+    for service in reversed(_SLURM_SERVICES):
+        if _service_exists(executor, service):
+            _run_checked(executor, f"systemctl start {service}", f"start of {service}")
+    for daemon in daemons:
+        _run_checked(executor, f"{supervisorctl} start {daemon}", f"start of the ParallelCluster daemon {daemon}")
+
+
+def _state_save_location(executor):
+    """Return the StateSaveLocation the cluster configuration declares."""
+    declaration = _run_checked(
+        executor,
+        f"grep -ihE '^[[:space:]]*StateSaveLocation[[:space:]]*=' {_SLURM_CONF} | tail -n 1",
+        f"StateSaveLocation declared in {_SLURM_CONF}",
+        sudo=False,
+    )
+    return declaration.split("=", 1)[1].strip()
+
+
+def _restore_directory_from_archive(executor, archive, parent, name, aside):
+    """Replace parent/name with the copy the archive holds, keeping what is there now under aside.
+
+    The current directory is moved aside rather than extracted over, because tar merges into an existing tree: an
+    extraction on top of it would leave behind every file that exists only in the version being rolled back.
+    """
+    members = _run_checked(executor, f"tar -tzf {archive} | head -n 20", f"listing of {archive}")
+    top_level = {member.split("/")[0] for member in members.splitlines() if member.strip()}
+    assert_that(top_level).described_as(f"top-level entries of {archive}").is_equal_to({name})
+
+    _run_checked(executor, f"rm -rf {aside}", f"removal of a leftover {aside}")
+    _run_checked(executor, f"mv {parent}/{name} {aside}", f"move of {parent}/{name} to {aside}")
+    _run_checked(executor, f"tar -xzf {archive} -C {parent}", f"extraction of {archive} into {parent}")
+    _run_checked(executor, f"test -d {parent}/{name}", f"presence of {parent}/{name} after extracting {archive}")
+
+
+def _ensure_mysql_client(executor):
+    """Install the MySQL command line tools on the target host if they are missing.
+
+    Every ParallelCluster AMI carries the MySQL client library slurmdbd links against, but only the RPM based
+    distributions get the command line tools with it: on the Debian family the cookbook installs libmysqlclient
+    alone, so mysqldump has to be added before the accounting database can be dumped.
+    """
+    if executor.run_remote_command("command -v mysqldump", raise_on_error=False, hide=True).return_code == 0:
+        return
+    logging.info("mysqldump is not installed on the target host, installing the MySQL command line client")
+    _run_checked(
+        executor,
+        "sh -c 'if command -v apt-get >/dev/null; then apt-get update && "
+        "DEBIAN_FRONTEND=noninteractive apt-get install -y mysql-client; else yum install -y mysql; fi'",
+        "installation of the MySQL command line client",
+    )
+    _run_checked(executor, "sh -c 'command -v mysqldump && command -v mysql'", "MySQL command line tools")
+
+
+def _run_accounting_database_script(executor, *args):
+    """Run the accounting database backup and restore script on the host that runs slurmdbd."""
+    _ensure_mysql_client(executor)
+    return executor.run_remote_script(
+        str(_ACCOUNTING_DATABASE_SCRIPT),
+        args=list(args),
+        run_as_root=True,
+        timeout=_ACCOUNTING_DATABASE_TIMEOUT,
+        pty=False,
+    )
+
+
+def back_up_accounting_database(executor):
+    """Dump the Slurm accounting database of the host the executor targets, and return the archive path.
+
+    Call this before the upgrade, from the host that runs slurmdbd: the head node of a cluster that keeps its
+    accounting database locally, or the external slurmdbd instance. The first slurmdbd of a new Slurm major
+    release converts the database schema one way, so this dump is the only thing that can undo that conversion,
+    and therefore the only thing that makes a cross major version rollback possible at all.
+    """
+    _run_accounting_database_script(executor, "backup")
+    archive = _newest_backup_archive(executor, _ACCOUNTING_BACKUP_GLOB)
+    _run_checked(executor, f"gzip --test {archive}", f"integrity of the accounting database backup {archive}")
+    # A dump of zero tables is a valid gzip stream, and restoring it would silently replace the accounting
+    # database with an empty one, so the archive is checked for the schema it is supposed to carry.
+    tables = _run_checked(
+        executor,
+        f"sh -c 'gzip -dc {archive} | grep -c \"^CREATE TABLE\"'",
+        f"tables in the accounting database backup {archive}",
+    )
+    logging.info("Backed the accounting database up to %s, holding %s tables", archive, tables)
+    return archive
+
+
+def _restore_accounting_database(executor, archive):
+    """Restore an accounting database dump, undoing the schema conversion of a cross-major upgrade.
+
+    slurmdbd must already be stopped: the script refuses to run otherwise, because the dump drops and recreates
+    the database it restores.
+    """
+    logging.info("Restoring the accounting database from %s", archive)
+    _run_accounting_database_script(executor, "restore", archive)
+
+
+def _assert_rollback_is_supported(executor, version_before, expected_version, accounting_backup):
+    """Refuse to roll back a cross-major upgrade that would leave a converted accounting database behind.
+
+    The conversion the first slurmdbd of a new major version performs is one way: the older binaries cannot read
+    the converted database. Restoring only the binaries would leave slurmdbd unable to start, so a cross-major
+    rollback of the host that runs slurmdbd also needs the dump taken before the upgrade.
+
+    A head node whose cluster uses an external slurmdbd is not subject to this: an older slurmctld talking to a
+    newer slurmdbd is the combination Slurm supports, and it is the external slurmdbd host that has to restore
+    the database when it is rolled back in turn.
+    """
+    if slurm_major_version(version_before) == slurm_major_version(expected_version):
+        return
+    if accounting_backup is not None or not _service_exists(executor, "slurmdbd"):
+        return
+    raise RuntimeError(
+        f"Refusing to roll Slurm {version_before} back to {expected_version}: the major version differs and this "
+        f"host runs slurmdbd, so the accounting database was converted one way. Pass the accounting_backup that "
+        f"back_up_accounting_database took before the upgrade."
+    )
+
+
+def assert_slurm_source_tree_present(executor, version):
+    """Assert the Chef cache still holds the source tree a given Slurm version was built from.
+
+    That tree is what `make uninstall` of the installed version needs, so an upgrade cannot be attempted again
+    without it. Nothing can recreate it on a cluster with no internet access, which makes deleting it during an
+    upgrade the difference between a recoverable and an unrecoverable cluster.
+    """
+    release = re.search(r"\d+\.\d+\.\d+", version or "")
+    assert_that(release).described_as(f"a Slurm release in {version!r}").is_not_none()
+    # find rather than a glob, because the Chef cache directory is only readable by root, so a pattern expanded by
+    # the shell of the login user matches nothing instead of failing.
+    name = f"slurm-slurm-{release.group(0).replace('.', '-')}-*"
+    trees = _run_checked(
+        executor,
+        f'find {_CHEF_CACHE_DIR} -mindepth 1 -maxdepth 1 -type d -name "{name}"',
+        f"search for the source tree of Slurm {version} under {_CHEF_CACHE_DIR}",
+    ).split()
+    assert_that(trees).described_as(f"source trees of Slurm {version} named {name}").is_length(1)
+    _run_checked(executor, f"test -f {trees[0]}/Makefile", f"Makefile of the source tree {trees[0]}")
+    logging.info("The source tree of Slurm %s is still available at %s", version, trees[0])
+
+
+def roll_back_test_software(executor, expected_version, accounting_backup=None, assert_controller=True):
+    """Roll the target host back to the Slurm version it ran before the test software was installed.
+
+    This is the procedure the upgrade documentation prescribes, exercised end to end: restoring the archives the
+    installer left is the only way back from an upgrade, and a backup that cannot be restored is indistinguishable
+    from a readable one until a cluster actually needs it. Pass the version the host reported before the install.
+
+    Pass the accounting_backup that back_up_accounting_database took before the upgrade to roll a host that runs
+    slurmdbd back across a major version: the schema conversion is not reversible any other way. Clear
+    assert_controller for a host that runs no slurmctld, such as an external slurmdbd instance; such a host has no
+    StateSaveLocation to restore either.
+
+    The compute and login nodes must already be stopped, exactly as for the install, and the call leaves the host
+    on the previous Slurm version, so it belongs after everything that must run on the new one.
+    """
+    version_before = get_slurm_version(executor)
+    assert_that(version_before).described_as("Slurm version reported by the host before the rollback").is_not_none()
+    if version_before == expected_version:
+        raise RuntimeError(f"The host already runs Slurm {expected_version}, so there is nothing to roll back")
+    _assert_rollback_is_supported(executor, version_before, expected_version, accounting_backup)
+
+    install_archive = _newest_backup_archive(executor, _INSTALL_BACKUP_GLOB)
+    slurmctld_log_size = _log_file_size(executor, _SLURMCTLD_LOG)
+    slurm_aside = f"{_SLURM_PREFIX_PARENT}/{_SLURM_PREFIX_NAME}{_ROLLBACK_ASIDE_SUFFIX}"
+    supervisorctl = None
+    daemons = []
+    state_archive = state_save_location = state_aside = None
+    if assert_controller:
+        # A host that runs no controller runs no clustermgtd and has no StateSaveLocation of its own either, so
+        # both are looked up only where they exist.
+        supervisorctl = _supervisorctl_path(executor)
+        daemons = _parallelcluster_daemons(executor, supervisorctl)
+        state_archive = _newest_backup_archive(executor, _STATE_BACKUP_GLOB)
+        state_save_location = _state_save_location(executor)
+        state_aside = f"{state_save_location}{_ROLLBACK_ASIDE_SUFFIX}"
+
+    logging.info("Rolling Slurm %s back to %s from %s", version_before, expected_version, install_archive)
+    _stop_slurm_stack(executor, supervisorctl, daemons)
+    _restore_directory_from_archive(
+        executor, install_archive, _SLURM_PREFIX_PARENT, _SLURM_PREFIX_NAME, slurm_aside
+    )
+    _run_checked(executor, "ldconfig", f"ldconfig after restoring {_SLURM_PREFIX_PARENT}/{_SLURM_PREFIX_NAME}")
+    if state_archive:
+        # The controller state has to go back with the binaries: Slurm state files are not backward compatible, so
+        # the state the new slurmctld rewrote can be state the restored one refuses to read.
+        _restore_directory_from_archive(
+            executor,
+            state_archive,
+            os.path.dirname(state_save_location),
+            os.path.basename(state_save_location),
+            state_aside,
+        )
+    if accounting_backup:
+        # After the binaries and before the daemons come back: the restored slurmdbd is the one that has to find a
+        # schema it can read, and the dump drops and recreates the database, which no slurmdbd may be using.
+        _restore_accounting_database(executor, accounting_backup)
+    _start_slurm_stack(executor, supervisorctl, daemons)
+
+    version_after = get_slurm_version(executor)
+    assert_that(version_after).described_as("Slurm version reported by the host after the rollback").is_equal_to(
+        expected_version
+    )
+    if assert_controller:
+        assert_slurm_controller_healthy(executor)
+        _report_slurmctld_log_of_replacement(executor, slurmctld_log_size, "rollback")
+    assert_slurm_source_tree_present(executor, expected_version)
+    aside_directories = " ".join(path for path in (slurm_aside, state_aside) if path)
+    _run_checked(executor, f"rm -rf {aside_directories}", "cleanup of the directories moved aside")
+    logging.info("Rolled Slurm back to %s", version_after)
+    return version_after
+
+
+def roll_back_test_software_with_stopped_consumers(executor, *clusters, expected_version, accounting_backup=None):
+    """Roll the target host back while the clusters have no compute or login consumers."""
+    with stopped_shared_slurm_consumers(*clusters):
+        return roll_back_test_software(executor, expected_version, accounting_backup=accounting_backup)
 
 
 def run_scheduler_smoke_test(

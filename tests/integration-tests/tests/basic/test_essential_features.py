@@ -27,7 +27,13 @@ from tests.common.assertions import (
     wait_instance_replaced_or_terminating,
 )
 from tests.common.mpi_common import _test_mpi
-from tests.common.software_installer import install_test_software_with_stopped_consumers, wait_for_partitions_up
+from tests.common.software_installer import (
+    get_slurm_version,
+    install_test_software_with_stopped_consumers,
+    roll_back_test_software_with_stopped_consumers,
+    run_scheduler_smoke_test,
+    wait_for_partitions_up,
+)
 from tests.common.utils import GPU_JOB_SCRIPT, fetch_instance_slots, run_system_analyzer
 
 
@@ -96,6 +102,8 @@ def test_essential_features(
     _test_gpu_workload(cluster, scheduler_commands_factory, test_datadir)
 
     remote_command_executor = RemoteCommandExecutor(cluster)
+    # Recorded before the install, because it is what the rollback at the end of the test has to restore.
+    version_before_install = get_slurm_version(remote_command_executor)
     install_test_software_with_stopped_consumers(remote_command_executor, cluster)
 
     # Restarting the compute fleet reports RUNNING before clustermgtd has brought the partitions back UP, so a job
@@ -124,6 +132,18 @@ def test_essential_features(
         cluster, region, instance, scheduler, default_threads_per_core, request, scheduler_commands_factory
     )
     _test_gpu_workload(cluster, scheduler_commands_factory, test_datadir)
+
+    # Restoring the archives the installer left is the only way back from a Slurm upgrade, so the rollback is
+    # exercised here rather than assumed: it must put the head node back on the version the AMI shipped and return
+    # the cluster to service. It runs last because it leaves the cluster on the previous Slurm version. This cluster
+    # covers the rollback of a cluster with no accounting database; test_slurm_accounting covers the one where the
+    # accounting database has to be restored with the binaries.
+    roll_back_test_software_with_stopped_consumers(
+        remote_command_executor, cluster, expected_version=version_before_install
+    )
+    # A job that has to launch a compute node is what shows the rolled-back cluster still provisions: the node
+    # boots the slurmd of its AMI, which has to talk to the restored controller.
+    run_scheduler_smoke_test(scheduler_commands_factory(remote_command_executor), partition="bootstrap-scripts-args")
 
 
 def _test_mpi_job(

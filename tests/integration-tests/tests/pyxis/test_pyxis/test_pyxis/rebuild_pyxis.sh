@@ -18,9 +18,15 @@ readonly SLURM_PREFIX="${SLURM_PREFIX:-/opt/slurm}"
 readonly SPANK_LIB_DIR="${SLURM_PREFIX}/lib/spank"
 readonly SPANK_LIB="${SPANK_LIB_DIR}/spank_pyxis.so"
 readonly PYXIS_CONF="${SLURM_PREFIX}/etc/plugstack.conf.d/pyxis.conf"
+# The cookbook downloads the Pyxis source archive to this directory and leaves it there: the AMI keeps the sources
+# of the dependencies it builds, and the image build reads their versions back from the file names. So the rebuild
+# needs no download, which is also what makes it possible on a cluster without internet access.
+readonly SOURCES_DIR="${SOURCES_DIR:-/opt/parallelcluster/sources}"
 # ParallelCluster 3.16.0 ships Pyxis 0.24.0; older releases ship 0.20.0, which predates the SPANK API of the
-# Slurm release we upgrade to. Build the newer one regardless of what the AMI came with.
-readonly PYXIS_VERSION="${PYXIS_VERSION:-0.24.0}"
+# Slurm release we upgrade to. The archive in the AMI is used when it is at least this version, and downloaded
+# otherwise.
+readonly PYXIS_MIN_VERSION="0.24.0"
+readonly PYXIS_VERSION="${PYXIS_VERSION:-${PYXIS_MIN_VERSION}}"
 readonly PYXIS_URL="${PYXIS_URL:-https://github.com/NVIDIA/pyxis/archive/refs/tags/v${PYXIS_VERSION}.tar.gz}"
 readonly BUILD_DIR="/opt/parallelcluster/tmp/pyxis-rebuild"
 
@@ -43,10 +49,33 @@ log "Pyxis plugstack configuration before the rebuild: $(cat "${PYXIS_CONF}")"
 
 rm -rf "${BUILD_DIR}"
 mkdir -p "${BUILD_DIR}"
-log "Downloading Pyxis ${PYXIS_VERSION} from ${PYXIS_URL}"
-curl --fail --location --silent --show-error --connect-timeout 10 --max-time 600 --retry 3 \
-    --output "${BUILD_DIR}/pyxis.tar.gz" "${PYXIS_URL}"
-tar -xf "${BUILD_DIR}/pyxis.tar.gz" -C "${BUILD_DIR}" --strip-components=1
+
+# The newest archive the AMI shipped, if any. Nothing prunes this directory, so a node that has been through more
+# than one cookbook run can hold several of them.
+local_archive="$(find "${SOURCES_DIR}" -maxdepth 1 -type f -name 'pyxis-*.tar.gz' 2>/dev/null | sort -V | tail -n 1)"
+if [[ -n "${local_archive}" ]]; then
+    local_version="$(basename "${local_archive}")"
+    local_version="${local_version#pyxis-}"
+    local_version="${local_version%.tar.gz}"
+    # sort -V puts the lower version first, so the minimum coming first means the local archive is new enough.
+    if [[ "$(printf '%s\n%s\n' "${PYXIS_MIN_VERSION}" "${local_version}" | sort -V | head -n 1)" \
+        != "${PYXIS_MIN_VERSION}" ]]; then
+        log "The archive in ${SOURCES_DIR} is Pyxis ${local_version}, older than ${PYXIS_MIN_VERSION}, ignoring it"
+        local_archive=""
+    fi
+fi
+
+if [[ -n "${local_archive}" ]]; then
+    pyxis_version="${local_version}"
+    log "Building Pyxis ${pyxis_version} from the archive the AMI shipped: ${local_archive}"
+    tar -xf "${local_archive}" -C "${BUILD_DIR}" --strip-components=1
+else
+    pyxis_version="${PYXIS_VERSION}"
+    log "Downloading Pyxis ${pyxis_version} from ${PYXIS_URL}"
+    curl --fail --location --silent --show-error --connect-timeout 10 --max-time 600 --retry 3 \
+        --output "${BUILD_DIR}/pyxis.tar.gz" "${PYXIS_URL}"
+    tar -xf "${BUILD_DIR}/pyxis.tar.gz" -C "${BUILD_DIR}" --strip-components=1
+fi
 
 log "Building Pyxis against ${SLURM_PREFIX}"
 # CPPFLAGS is passed through the environment, which is how upstream documents pointing the build at a Slurm in a
@@ -75,4 +104,4 @@ log "Pyxis plugstack configuration after the rebuild: $(cat "${PYXIS_CONF}")"
 "${SLURM_PREFIX}/bin/scontrol" reconfigure
 
 rm -rf "${BUILD_DIR}"
-log "Successfully rebuilt Pyxis ${PYXIS_VERSION} against the installed Slurm"
+log "Successfully rebuilt Pyxis ${pyxis_version} against the installed Slurm"

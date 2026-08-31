@@ -15,10 +15,15 @@ from tests.cloudwatch_logging import cloudwatch_logging_boto3_utils as cw_utils
 from tests.common.assertions import assert_no_defunct_slurm_config_params, known_defunct_slurm_config_params
 from tests.common.software_installer import (
     assert_slurm_state_preserved,
+    back_up_accounting_database,
+    get_slurm_version,
     install_test_software,
     install_test_software_with_stopped_consumers,
+    roll_back_test_software,
+    roll_back_test_software_with_stopped_consumers,
     snapshot_slurm_state,
     stopped_shared_slurm_consumers,
+    wait_for_partitions_up,
 )
 from tests.common.utils import get_aws_domain, installed_parallelcluster_version_is_at_least
 
@@ -381,6 +386,11 @@ def test_slurm_accounting(
     pre_upgrade_job_id = _test_jobs_get_recorded(scheduler_commands)
     slurm_state_snapshot = snapshot_slurm_state(remote_command_executor, scheduler_commands)
     slurmdbd_log_line_count = _get_slurmdbd_log_line_count(remote_command_executor)
+    # Taken before the install, because the first slurmdbd of a new major release converts the schema one way:
+    # from that point on this dump is the only thing that can put the accounting database back. Recorded together
+    # with the version the dump belongs to, which is what the rollback at the end of the test restores.
+    version_before_install = get_slurm_version(remote_command_executor)
+    accounting_backup = back_up_accounting_database(remote_command_executor)
 
     install_test_software_with_stopped_consumers(remote_command_executor, cluster)
 
@@ -400,10 +410,75 @@ def test_slurm_accounting(
         _test_slurm_accounting_database_name(remote_command_executor, custom_database_name)
         _test_cluster_registered_with_custom_name(remote_command_executor, custom_cluster_name)
     assert_no_defunct_slurm_config_params(remote_command_executor, ignore_patterns=known_defunct_slurm_config_params())
-    # Last, because it reconfigures SSL and restarts slurmdbd: the install recompiles slurmdbd against the
-    # system MySQL client libraries, so the TLS connection to the database has to be re-verified.
+    # Last of the post-upgrade checks, because it reconfigures SSL and restarts slurmdbd: the install recompiles
+    # slurmdbd against the system MySQL client libraries, so the TLS connection to the database has to be
+    # re-verified.
     _test_require_server_identity(remote_command_executor, test_resources_dir, region)
     _test_that_slurmdbd_is_running(remote_command_executor)
+
+    _test_rollback(
+        cluster,
+        remote_command_executor,
+        scheduler_commands,
+        test_resources_dir,
+        version_before_install,
+        accounting_backup,
+        slurm_state_snapshot,
+        pre_upgrade_job_id,
+        custom_cluster_name if custom_names_supported else None,
+    )
+
+
+def _test_rollback(
+    cluster,
+    remote_command_executor,
+    scheduler_commands,
+    test_resources_dir,
+    expected_version,
+    accounting_backup,
+    slurm_state_snapshot,
+    pre_upgrade_job_id,
+    custom_cluster_name,
+):
+    """Verify the upgrade of a cluster with Slurm accounting can be undone, database included.
+
+    This is the only rollback that has to undo a database conversion. The conversion the first slurmdbd of a new
+    major release performs is one way, so without the dump taken before the upgrade a cross major version upgrade
+    of a cluster with accounting is a one-way door: the restored slurmdbd would refuse to start against the
+    converted schema. Restoring the dump is what makes the documented rollback procedure work across majors, and
+    the checks below are what prove the restored database is the pre-upgrade one and is still usable.
+    """
+    logging.info("Rolling the upgrade back to Slurm %s", expected_version)
+    slurmdbd_log_line_count = _get_slurmdbd_log_line_count(remote_command_executor)
+
+    roll_back_test_software_with_stopped_consumers(
+        remote_command_executor, cluster, expected_version=expected_version, accounting_backup=accounting_backup
+    )
+
+    # Scoped to the lines the restored slurmdbd appended: the whole log holds the startup lines of both versions
+    # installed so far, so an unscoped check would pass even if the restored slurmdbd never came up.
+    _test_successful_startup_in_log(remote_command_executor, since_line=slurmdbd_log_line_count)
+    _assert_no_upgrade_failures_in_slurmdbd_log(remote_command_executor, slurmdbd_log_line_count)
+    _test_that_slurmdbd_is_running(remote_command_executor)
+
+    # The same snapshot is verified a second time on purpose: the rollback restores the StateSaveLocation archive
+    # the snapshot was captured from, so the held job and the reservation the post-upgrade check consumed have to
+    # be back. Nothing else distinguishes a restored controller state from an empty one that simply starts.
+    assert_slurm_state_preserved(remote_command_executor, slurm_state_snapshot)
+
+    # The job records, users and associations all live in the database that was just dropped and recreated from
+    # the dump, so they are read back with the same checks used before the upgrade.
+    _assert_preexisting_job_records_readable(scheduler_commands, [pre_upgrade_job_id])
+    _test_slurmdb_users(remote_command_executor, scheduler_commands, test_resources_dir)
+    if custom_cluster_name:
+        _test_cluster_registered_with_custom_name(remote_command_executor, custom_cluster_name)
+
+    # Restarting the compute fleet reports RUNNING before clustermgtd has brought the partitions back UP, so a job
+    # submitted right away fails with "Requested partition configuration not available now".
+    wait_for_partitions_up(scheduler_commands)
+    # A job that has to launch a compute node is what shows the rolled-back cluster still provisions and still
+    # records: the node boots the slurmd of its AMI, which has to talk to the restored controller and slurmdbd.
+    _test_jobs_get_recorded(scheduler_commands)
 
 
 @pytest.mark.usefixtures("os", "instance", "scheduler")
@@ -460,6 +535,18 @@ def test_slurm_accounting_external_dbd(
     slurm_state_snapshot_2 = snapshot_slurm_state(
         headnode_remote_command_executor_2, scheduler_commands_factory(headnode_remote_command_executor_2)
     )
+    # Recorded before the install, because they are what the rollback at the end of the test has to restore. The
+    # database dump is taken from the slurmdbd host, the only one of the three that can reach the database, and
+    # before the upgrade, because the schema conversion the new slurmdbd performs cannot be undone any other way.
+    versions_before_install = {
+        executor: get_slurm_version(executor)
+        for executor in (
+            slurmdbd_node_remote_command_executor,
+            headnode_remote_command_executor_1,
+            headnode_remote_command_executor_2,
+        )
+    }
+    accounting_backup = back_up_accounting_database(slurmdbd_node_remote_command_executor)
 
     # slurmdbd first, then the controllers: Slurm requires slurmdbd to be at the same or a higher major
     # release than every slurmctld talking to it.
@@ -503,6 +590,94 @@ def test_slurm_accounting_external_dbd(
     retry(stop_max_attempt_number=30, wait_fixed=seconds(20))(_assert_job_completion_recorded_in_accounting)(
         post_upgrade_job_id_2, scheduler_commands_1, clusters=cluster_2.name
     )
+
+    _test_rollback_external_dbd(
+        cluster,
+        cluster_2,
+        slurmdbd_node_remote_command_executor,
+        headnode_remote_command_executor_1,
+        headnode_remote_command_executor_2,
+        versions_before_install,
+        accounting_backup,
+        slurm_state_snapshot_1,
+        slurm_state_snapshot_2,
+        [pre_upgrade_job_id_1] + inter_cluster_job_ids,
+        pre_upgrade_job_id_2,
+        cluster.name,
+        cluster_2.name,
+        scheduler_commands_1,
+        scheduler_commands_2,
+    )
+
+
+def _test_rollback_external_dbd(
+    cluster,
+    cluster_2,
+    slurmdbd_executor,
+    headnode_executor_1,
+    headnode_executor_2,
+    versions_before_install,
+    accounting_backup,
+    slurm_state_snapshot_1,
+    slurm_state_snapshot_2,
+    pre_upgrade_job_ids_1,
+    pre_upgrade_job_id_2,
+    cluster_name_1,
+    cluster_name_2,
+    scheduler_commands_1,
+    scheduler_commands_2,
+):
+    """Verify the upgrade of two clusters sharing an external slurmdbd can be undone, database included.
+
+    Unlike the upgrade, the rollback goes controllers first and slurmdbd last, for the same reason: slurmdbd must
+    never be at a lower major release than a slurmctld talking to it, so the controllers have to come down to the
+    old release while slurmdbd is still on the new one. The accounting database is restored with the slurmdbd host,
+    the only one of the three that can reach it, and only there: an older slurmctld against a newer slurmdbd is a
+    combination Slurm supports, so a head node needs no database restore of its own.
+    """
+    logging.info("Rolling the upgrade of both clusters and of the external slurmdbd back")
+    slurmdbd_log_line_count = _get_slurmdbd_log_line_count(slurmdbd_executor)
+
+    with stopped_shared_slurm_consumers(cluster, cluster_2):
+        for executor in (headnode_executor_1, headnode_executor_2):
+            roll_back_test_software(executor, versions_before_install[executor])
+        # This is the mirror image of the upgrade: a new slurmdbd serving old slurmctlds, verified before the
+        # database goes back, because after it there is nothing left of the new release to be compatible with.
+        _test_that_slurmdbd_is_running(headnode_executor_1)
+        # There is no slurmctld and no StateSaveLocation on the slurmdbd host to restore.
+        roll_back_test_software(
+            slurmdbd_executor,
+            versions_before_install[slurmdbd_executor],
+            accounting_backup=accounting_backup,
+            assert_controller=False,
+        )
+
+    # Scoped to the lines the restored slurmdbd appended: the whole log holds the startup lines of both versions
+    # installed so far, so an unscoped check would pass even if the restored slurmdbd never came up.
+    _test_successful_startup_in_log(slurmdbd_executor, since_line=slurmdbd_log_line_count)
+    _assert_no_upgrade_failures_in_slurmdbd_log(slurmdbd_executor, slurmdbd_log_line_count)
+    # The same snapshots are verified a second time on purpose: the rollback restores the StateSaveLocation
+    # archives they were captured from, so the held jobs and reservations the post-upgrade check consumed have to
+    # be back. Nothing else distinguishes a restored controller state from an empty one that simply starts.
+    assert_slurm_state_preserved(headnode_executor_1, slurm_state_snapshot_1)
+    assert_slurm_state_preserved(headnode_executor_2, slurm_state_snapshot_2)
+
+    # The restored database was dropped and recreated from the dump, so both clusters have to find their own
+    # pre-upgrade records and each other's in it, and both have to be able to record a new job in it.
+    for scheduler_commands in (scheduler_commands_1, scheduler_commands_2):
+        _assert_preexisting_job_records_readable(scheduler_commands, pre_upgrade_job_ids_1, clusters=cluster_name_1)
+        _assert_preexisting_job_records_readable(
+            scheduler_commands, [pre_upgrade_job_id_2], clusters=cluster_name_2
+        )
+    for executor, scheduler_commands in (
+        (headnode_executor_1, scheduler_commands_1),
+        (headnode_executor_2, scheduler_commands_2),
+    ):
+        _test_that_slurmdbd_is_running(executor)
+        # Restarting the compute fleet reports RUNNING before clustermgtd has brought the partitions back UP, so a
+        # job submitted right away fails with "Requested partition configuration not available now".
+        wait_for_partitions_up(scheduler_commands)
+        _test_jobs_get_recorded(scheduler_commands)
 
 
 def _check_cluster_external_dbd(cluster, config_params, region, scheduler_commands_factory, test_resources_dir):
