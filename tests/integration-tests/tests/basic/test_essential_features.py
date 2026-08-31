@@ -27,7 +27,7 @@ from tests.common.assertions import (
     wait_instance_replaced_or_terminating,
 )
 from tests.common.mpi_common import _test_mpi
-from tests.common.software_installer import install_test_software_with_stopped_consumers
+from tests.common.software_installer import install_test_software_with_stopped_consumers, wait_for_partitions_up
 from tests.common.utils import GPU_JOB_SCRIPT, fetch_instance_slots, run_system_analyzer
 
 
@@ -95,16 +95,21 @@ def test_essential_features(
 
     _test_gpu_workload(cluster, scheduler_commands_factory, test_datadir)
 
-    install_test_software_with_stopped_consumers(RemoteCommandExecutor(cluster), cluster)
+    remote_command_executor = RemoteCommandExecutor(cluster)
+    install_test_software_with_stopped_consumers(remote_command_executor, cluster)
+
+    # Restarting the compute fleet reports RUNNING before clustermgtd has brought the partitions back UP, so a job
+    # submitted right away fails with "Requested partition configuration not available now".
+    wait_for_partitions_up(scheduler_commands_factory(remote_command_executor))
 
     # The checks above are repeated as they are, rather than a hand-picked subset of their internals: the installer
     # recompiles Slurm against /opt/pmix and replaces /opt/slurm, so a controller that answers scontrol ping is no
     # proof that srun can still launch a multi-node MPI job or that the hyperthreading settings are still applied.
     # Reusing them also brings their own assert_no_errors_in_logs and scaling coverage to the upgraded cluster.
-    _test_disable_hyperthreading(
-        cluster, region, instance, scheduler, default_threads_per_core, request, scheduler_commands_factory
-    )
-    _test_gpu_workload(cluster, scheduler_commands_factory, test_datadir)
+    #
+    # The order matches the first pass: _test_mpi_job asserts an absolute maximum on the cluster capacity, so it
+    # has to run while only the static nodes are up. Stopping the compute fleet for the installer terminated every
+    # dynamic node, and the two checks below leave their nodes up for ScaledownIdletime afterwards.
     _test_mpi_job(
         scheduler,
         region,
@@ -115,6 +120,10 @@ def test_essential_features(
         scaledown_idletime,
         max_queue_size,
     )
+    _test_disable_hyperthreading(
+        cluster, region, instance, scheduler, default_threads_per_core, request, scheduler_commands_factory
+    )
+    _test_gpu_workload(cluster, scheduler_commands_factory, test_datadir)
 
 
 def _test_mpi_job(
