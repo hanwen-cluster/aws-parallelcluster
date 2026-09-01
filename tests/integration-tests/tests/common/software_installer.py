@@ -69,6 +69,11 @@ _ACCOUNTING_BACKUP_GLOB = "/opt/slurm_accounting_backup_*.sql.gz"
 # Dumping and restoring the accounting database of a long lived cluster is minutes of work, and it runs
 # against a database that may be scaling up while it does, so it gets the same budget as the build itself.
 _ACCOUNTING_DATABASE_TIMEOUT = 3600
+# Remote commands have no timeout by default, so anything that blocks on the target host stalls the test for as long
+# as the run is allowed to last, without a single line of output saying where. Every command this module runs itself
+# is minutes of work at most, the installer and the accounting database script being the exceptions that carry their
+# own budgets, so they are all capped generously and a stuck one fails instead of hanging.
+_REMOTE_COMMAND_TIMEOUT = 600
 # The upstream MySQL repository, which holds the command line client of the same release as the client library the
 # cookbook installs. The series is read from that library rather than pinned here, so that an AMI moving to another
 # MySQL release needs no change.
@@ -746,10 +751,17 @@ def assert_slurm_state_preserved(remote_command_executor, snapshot):
     remote_command_executor.run_remote_command(f"scancel {held_job_id}", raise_on_error=False)
 
 
+def _run_probe(executor, command, sudo=False):
+    """Run a remote command whose exit code or output the caller inspects itself, under the same time cap."""
+    return executor.run_remote_command(
+        f"sudo {command}" if sudo else command, raise_on_error=False, hide=True, timeout=_REMOTE_COMMAND_TIMEOUT
+    )
+
+
 def _run_checked(executor, command, description, sudo=True):
     """Run a remote command that must succeed and return its stripped stdout."""
     result = executor.run_remote_command(
-        f"sudo {command}" if sudo else command, raise_on_error=False, hide=True
+        f"sudo {command}" if sudo else command, raise_on_error=False, hide=True, timeout=_REMOTE_COMMAND_TIMEOUT
     )
     assert_that(result.return_code).described_as(f"{description}: {_failed_command_output(result)}").is_equal_to(0)
     return result.stdout.strip()
@@ -769,11 +781,21 @@ def _service_exists(executor, service):
 
     slurmrestd is only present when the cluster enables the REST API, and slurmdbd only runs on a head node whose
     cluster keeps its accounting database locally, so neither can be stopped unconditionally.
+
+    The load state is asked for instead of the unit file being printed with `systemctl cat`, which hung the whole
+    test on every host that really has slurmdbd installed: printing commands are piped through a pager when
+    systemctl believes it writes to a terminal, which the pty of a remote command makes it believe. `show` prints
+    a single line and pages nothing. --property is spelled out and the value matched inside the output because
+    --value needs a newer systemd than the oldest supported distribution has.
     """
-    return (
-        executor.run_remote_command(f"systemctl cat {service}.service", raise_on_error=False, hide=True).return_code
-        == 0
-    )
+    load_state = executor.run_remote_command(
+        f"systemctl show --no-pager --property=LoadState {service}.service",
+        raise_on_error=False,
+        hide=True,
+        pty=False,
+        timeout=_REMOTE_COMMAND_TIMEOUT,
+    ).stdout
+    return "LoadState=loaded" in load_state
 
 
 def _parallelcluster_daemons(executor, supervisorctl):
@@ -783,7 +805,7 @@ def _parallelcluster_daemons(executor, supervisorctl):
     reached fails here instead of turning every stop and start below into a silent no-op.
     """
     # supervisorctl exits non-zero as soon as one program is not RUNNING, so the exit code says nothing here.
-    status = executor.run_remote_command(f"sudo {supervisorctl} status", raise_on_error=False, hide=True).stdout
+    status = _run_probe(executor, f"{supervisorctl} status", sudo=True).stdout
     known = {line.split()[0] for line in status.splitlines() if line.strip()}
     daemons = [daemon for daemon in _PARALLELCLUSTER_DAEMONS if daemon in known]
     assert_that(daemons).described_as(
@@ -796,10 +818,8 @@ def _stop_slurm_stack(executor, supervisorctl, daemons):
     for daemon in daemons:
         # supervisorctl reports a program that is already down as an error, so the state is asserted rather than
         # the exit code: what matters is that the daemon is not running while the binaries are replaced.
-        executor.run_remote_command(f"sudo {supervisorctl} stop {daemon}", raise_on_error=False, hide=True)
-        status = executor.run_remote_command(
-            f"sudo {supervisorctl} status {daemon}", raise_on_error=False, hide=True
-        ).stdout
+        _run_probe(executor, f"{supervisorctl} stop {daemon}", sudo=True)
+        status = _run_probe(executor, f"{supervisorctl} status {daemon}", sudo=True).stdout
         assert_that(status).described_as(f"status of {daemon} after stopping it").does_not_contain("RUNNING")
 
     for service in _SLURM_SERVICES:
@@ -850,10 +870,10 @@ def _ensure_mysql_client(executor):
     the Debian family, and none of those carries mysqldump. So this runs on every operating system, before the
     accounting database is dumped or restored.
     """
-    if executor.run_remote_command("command -v mysqldump", raise_on_error=False, hide=True).return_code == 0:
+    if _run_probe(executor, "command -v mysqldump").return_code == 0:
         return
     logging.info("mysqldump is not installed on the target host, installing the MySQL command line client")
-    if executor.run_remote_command("command -v apt-get", raise_on_error=False, hide=True).return_code == 0:
+    if _run_probe(executor, "command -v apt-get").return_code == 0:
         _run_checked(
             executor,
             "sh -c 'apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y mysql-client'",
@@ -887,10 +907,10 @@ def _install_mysql_client_rpm(executor):
         logging.info("Installing the MySQL command line client from %s", url)
         # The repositories are disabled because the client only needs the components the cookbook already
         # installed, and reading their metadata is exactly what fails on an AMI whose mirrors are gone.
-        installation = executor.run_remote_command(
-            f'sudo sh -c \'curl -fsSL -o /tmp/{rpm} {url} && yum install -y --disablerepo="*" /tmp/{rpm}\'',
-            raise_on_error=False,
-            hide=True,
+        installation = _run_probe(
+            executor,
+            f'sh -c \'curl -fsSL -o /tmp/{rpm} {url} && yum install -y --disablerepo="*" /tmp/{rpm}\'',
+            sudo=True,
         )
         if installation.return_code == 0:
             return
