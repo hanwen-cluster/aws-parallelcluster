@@ -69,6 +69,10 @@ _ACCOUNTING_BACKUP_GLOB = "/opt/slurm_accounting_backup_*.sql.gz"
 # Dumping and restoring the accounting database of a long lived cluster is minutes of work, and it runs
 # against a database that may be scaling up while it does, so it gets the same budget as the build itself.
 _ACCOUNTING_DATABASE_TIMEOUT = 3600
+# The upstream MySQL repository, which holds the command line client of the same release as the client library the
+# cookbook installs. The series is read from that library rather than pinned here, so that an AMI moving to another
+# MySQL release needs no change.
+_MYSQL_CLIENT_RPM_URL = "https://repo.mysql.com/yum/mysql-{series}-community/el/{el_version}/{arch}/{rpm}"
 
 
 def _artifact_region():
@@ -841,20 +845,67 @@ def _restore_directory_from_archive(executor, archive, parent, name, aside):
 def _ensure_mysql_client(executor):
     """Install the MySQL command line tools on the target host if they are missing.
 
-    Every ParallelCluster AMI carries the MySQL client library slurmdbd links against, but only the RPM based
-    distributions get the command line tools with it: on the Debian family the cookbook installs libmysqlclient
-    alone, so mysqldump has to be added before the accounting database can be dumped.
+    No ParallelCluster AMI ships them. The cookbook installs the client library slurmdbd links against, together
+    with its common, plugin and development components on the RPM based distributions and libmysqlclient alone on
+    the Debian family, and none of those carries mysqldump. So this runs on every operating system, before the
+    accounting database is dumped or restored.
     """
     if executor.run_remote_command("command -v mysqldump", raise_on_error=False, hide=True).return_code == 0:
         return
     logging.info("mysqldump is not installed on the target host, installing the MySQL command line client")
-    _run_checked(
-        executor,
-        "sh -c 'if command -v apt-get >/dev/null; then apt-get update && "
-        "DEBIAN_FRONTEND=noninteractive apt-get install -y mysql-client; else yum install -y mysql; fi'",
-        "installation of the MySQL command line client",
-    )
+    if executor.run_remote_command("command -v apt-get", raise_on_error=False, hide=True).return_code == 0:
+        _run_checked(
+            executor,
+            "sh -c 'apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y mysql-client'",
+            "installation of the MySQL command line client",
+        )
+    else:
+        _install_mysql_client_rpm(executor)
     _run_checked(executor, "sh -c 'command -v mysqldump && command -v mysql'", "MySQL command line tools")
+
+
+def _install_mysql_client_rpm(executor):
+    """Install the mysql-community-client release that matches the client library already on the host.
+
+    The RPM is fetched from the MySQL repository rather than installed with `yum install mysql`, because the
+    repositories an AMI is pinned to are not dependable: those of Rocky Linux 9.5 have been retired, so every dnf
+    call ignores them and no package name resolves at all. The ParallelCluster mirror is not an alternative, as it
+    only carries the four components the cookbook installs, none of which is the one holding mysqldump. The
+    distribution package is still tried afterwards, so a host whose repositories do work is never worse off.
+    """
+    release = _run_checked(
+        executor,
+        "rpm -q --queryformat '%{VERSION}-%{RELEASE}.%{ARCH}' mysql-community-libs",
+        "release of the MySQL client library installed on the target host",
+    )
+    # The release reads like 8.4.10-1.el9.x86_64, which is everything the repository layout and the file name need.
+    match = re.fullmatch(r"(\d+\.\d+)\.\d+-\S+\.el(\d+)\.(\w+)", release)
+    if match:
+        series, el_version, arch = match.groups()
+        rpm = f"mysql-community-client-{release}.rpm"
+        url = _MYSQL_CLIENT_RPM_URL.format(series=series, el_version=el_version, arch=arch, rpm=rpm)
+        logging.info("Installing the MySQL command line client from %s", url)
+        # The repositories are disabled because the client only needs the components the cookbook already
+        # installed, and reading their metadata is exactly what fails on an AMI whose mirrors are gone.
+        installation = executor.run_remote_command(
+            f'sudo sh -c \'curl -fsSL -o /tmp/{rpm} {url} && yum install -y --disablerepo="*" /tmp/{rpm}\'',
+            raise_on_error=False,
+            hide=True,
+        )
+        if installation.return_code == 0:
+            return
+        logging.warning(
+            "Could not install %s, falling back to the distribution package: %s",
+            url,
+            _failed_command_output(installation),
+        )
+    else:
+        logging.warning(
+            "Cannot tell which mysql-community-client release matches the installed library %s, falling back to "
+            "the distribution package",
+            release,
+        )
+    _run_checked(executor, "yum install -y mysql", "installation of the MySQL command line client")
 
 
 def _run_accounting_database_script(executor, *args):
