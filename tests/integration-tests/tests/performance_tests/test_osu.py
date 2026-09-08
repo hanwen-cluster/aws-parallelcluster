@@ -37,6 +37,14 @@ OSU_BENCHMARKS_INSTANCES = ["c5n.18xlarge", "p5en.48xlarge", "p6-b200.48xlarge"]
 # after, so a persistent regression still fails while a one-off spike does not.
 CONFIRMATION_REPETITIONS = 2
 
+# Largest collective message size, in bytes, run on instance types with a burstable network (EC2 "Up to X Gbps",
+# baseline below peak, e.g. c5.xlarge). Above 8K the collectives on 500 c5.xlarge are bandwidth bound and run above
+# the instance network baseline, so the result tracks per-instance burst credits rather than the system under test:
+# on the same day both MPIs move together (r=0.91) while small and large sizes within a run are uncorrelated (r<0.2).
+# Those sizes also cost most of the wall time (allgather spends ~200s at 128K-512K vs ~45s below 8K). Instance types
+# with a fixed network baseline (c5n.18xlarge, p5, p6) run the full OSU size range.
+BURSTABLE_NETWORK_MAX_MESSAGE_SIZE = 8192
+
 
 @pytest.mark.flaky(reruns=0)
 def test_osu(
@@ -56,6 +64,7 @@ def test_osu(
     instance_info = get_instance_info(instance)
     instance_memory = instance_info["MemoryInfo"]["SizeInMiB"]
     instance_efa_supported = instance_info["NetworkInfo"]["EfaSupported"]
+    max_message_size = BURSTABLE_NETWORK_MAX_MESSAGE_SIZE if _has_burstable_network(instance_info) else None
     if instance_memory <= 16384:
         # For smaller instance types, run a large cluster. The head node needs to be large to handle the cluster.
         max_queue_size = 500
@@ -131,6 +140,7 @@ def test_osu(
                 num_instances=max_queue_size,
                 slots_per_instance=slots_per_instance,
                 partition="efa-enabled",
+                max_message_size=max_message_size,
             )
         )
     assert_that(benchmark_failures, description="Some OSU benchmarks are failing").is_empty()
@@ -149,6 +159,20 @@ def test_osu(
         )
 
     assert_no_errors_in_logs(remote_command_executor, scheduler, skip_ice=True)
+
+
+def _has_burstable_network(instance_info):
+    """
+    Return True when the instance type's network bandwidth is burstable.
+
+    EC2 reports a baseline below the peak for "Up to X Gbps" instance types. Bandwidth-bound benchmarks on those
+    measure the burst credit state of the fleet rather than the software under test.
+    """
+    network_info = instance_info.get("NetworkInfo", {})
+    cards = network_info.get("NetworkCards") or []
+    if any("BaselineBandwidthInGbps" in card and "PeakBandwidthInGbps" in card for card in cards):
+        return any(card.get("BaselineBandwidthInGbps", 0) < card.get("PeakBandwidthInGbps", 0) for card in cards)
+    return str(network_info.get("NetworkPerformance", "")).lower().startswith("up to")
 
 
 def _test_osu_benchmarks_pt2pt(
@@ -203,6 +227,7 @@ def _test_osu_benchmarks_collective(
     num_instances,
     slots_per_instance,
     partition=None,
+    max_message_size=None,
 ):
     failed_benchmarks = []
     benchmark_group = "collective"
@@ -226,6 +251,7 @@ def _test_osu_benchmarks_collective(
             test_datadir,
             repetitions=repetitions,
             timeout=24 + repetitions * num_instances * 0.1,
+            max_message_size=max_message_size,
         )
         return output
 
