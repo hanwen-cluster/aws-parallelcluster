@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+from urllib.parse import urlparse
 
 import boto3
 import pytest
@@ -8,13 +9,20 @@ from assertpy import assert_that
 from remote_command_executor import RemoteCommandExecutor
 from retrying import retry
 from time_utils import seconds
-from utils import to_snake_case
+from utils import get_arn_partition, to_snake_case
 
 from tests.cloudwatch_logging import cloudwatch_logging_boto3_utils as cw_utils
 from tests.common.assertions import assert_no_defunct_slurm_config_params
 from tests.common.utils import get_aws_domain
 
 STARTED_PATTERN = re.compile(r".*slurmdbd version [\d.]+ started")
+# Endpoint serving the RDS CA bundles of each partition, keyed by ARN partition. GovCloud is served from a single
+# us-gov-west-1 host for both of its regions, and China from an S3 bucket in cn-north-1 for both of its regions.
+RDS_TRUSTSTORE_ENDPOINTS = {
+    "aws": "https://truststore.pki.rds.amazonaws.com",
+    "aws-us-gov": "https://truststore.pki.us-gov-west-1.rds.amazonaws.com",
+    "aws-cn": "https://rds-truststore.s3.cn-north-1.amazonaws.com.cn",
+}
 
 
 def _get_slurm_database_config_parameters(database_stack_outputs):
@@ -49,10 +57,17 @@ def _is_accounting_enabled(remote_command_executor):
 
 
 def _rds_ca_bundle_url(region):
-    if "us-iso" in region:
-        return f"https://s3.{region}.{get_aws_domain(region)}/rds-downloads/rds-combined-ca-bundle.pem"
-    else:
-        return f"https://truststore.pki.rds.amazonaws.com/{region}/{region}-bundle.pem"
+    """Return the URL of the RDS CA bundle to trust for a database in the given region."""
+    # The RDS trust store is partition local: each partition publishes its bundles under its own endpoint, and the
+    # commercial endpoint answers 403 for the region paths of the other partitions, so the endpoint has to be selected
+    # per partition rather than interpolating the region into a single host.
+    # https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/UsingWithRDS.SSL.html
+    # https://docs.amazonaws.cn/en_us/AmazonRDS/latest/UserGuide/UsingWithRDS.SSL.html
+    truststore_endpoint = RDS_TRUSTSTORE_ENDPOINTS.get(get_arn_partition(region))
+    if truststore_endpoint:
+        return f"{truststore_endpoint}/{region}/{region}-bundle.pem"
+    # The isolated partitions have no RDS trust store: they serve the bundle from a regional S3 bucket instead.
+    return f"https://s3.{region}.{get_aws_domain(region)}/rds-downloads/rds-combined-ca-bundle.pem"
 
 
 def _require_server_identity(remote_command_executor, test_resources_dir, region):
@@ -61,7 +76,10 @@ def _require_server_identity(remote_command_executor, test_resources_dir, region
         os.path.join(str(test_resources_dir), "require_server_identity.sh"),
         args=[
             ca_url,
-            f"{region}-bundle.pem",
+            # The script downloads the bundle with wget, which names the file after the URL, so the name it is told
+            # to configure has to be the basename of the URL: outside the commercial partitions the bundle is not
+            # necessarily called {region}-bundle.pem.
+            os.path.basename(urlparse(ca_url).path),
         ],
         run_as_root=True,
     )
