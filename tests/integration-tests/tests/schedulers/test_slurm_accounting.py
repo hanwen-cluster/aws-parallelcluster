@@ -15,7 +15,10 @@ from tests.cloudwatch_logging import cloudwatch_logging_boto3_utils as cw_utils
 from tests.common.assertions import assert_no_defunct_slurm_config_params
 from tests.common.utils import get_aws_domain
 
-STARTED_PATTERN = re.compile(r".*slurmdbd version [\d.]+ started")
+# The version slurmdbd reports is whatever the build was stamped with, and a pre-release build stamps something
+# like "25.11.8-0pre1", so the version is matched as an opaque token rather than as digits and dots.
+STARTED_PATTERN = re.compile(r".*slurmdbd version \S+ started")
+SLURMDBD_LOG_FILE = "/var/log/slurmdbd.log"
 # Endpoint serving the RDS CA bundles of each partition, keyed by ARN partition. GovCloud is served from a single
 # us-gov-west-1 host for both of its regions, and China from an S3 bucket in cn-north-1 for both of its regions.
 RDS_TRUSTSTORE_ENDPOINTS = {
@@ -53,7 +56,12 @@ def _get_expected_users(remote_command_executor, test_resources_dir):
 
 
 def _is_accounting_enabled(remote_command_executor):
-    return remote_command_executor.run_remote_command("sacct", raise_on_error=False).ok
+    result = remote_command_executor.run_remote_command("sacct", raise_on_error=False)
+    if not result.ok:
+        # The message sacct prints on stderr is the only explanation available for a slurmdbd the command cannot
+        # talk to, so it is logged here instead of being dropped with the exit code.
+        logging.info("sacct failed: %s", result.stderr.strip())
+    return result.ok
 
 
 def _rds_ca_bundle_url(region):
@@ -86,14 +94,13 @@ def _require_server_identity(remote_command_executor, test_resources_dir, region
 
 
 def _test_require_server_identity(remote_command_executor, test_resources_dir, region):
+    # This rewrites slurmdbd.conf and restarts slurmdbd on the host it is given, so callers have to verify accounting
+    # afterwards from a host that can run sacct: with an external slurmdbd that is the head node, not this host.
     # TODO We must address the extra challenges of configuring SSL in isolated regions.
     # For the time being we skip this check to unblock the validation of the feature without SSL.
     # This is reasonable in the short term because the SSL configuration is actually out of scope for ParallelCluster.
     if "us-iso" not in region:
         _require_server_identity(remote_command_executor, test_resources_dir, region)
-    retry(stop_max_attempt_number=3, wait_fixed=seconds(10))(_is_accounting_enabled)(
-        remote_command_executor,
-    )
 
 
 def _test_slurmdb_users(remote_command_executor, scheduler_commands, test_resources_dir):
@@ -107,11 +114,29 @@ def _test_slurmdb_users(remote_command_executor, scheduler_commands, test_resour
         assert_that(user.get("adminlevel")).is_equal_to("Administrator")
 
 
-@retry(stop_max_attempt_number=36, wait_fixed=10 * 1000)
-def _test_successful_startup_in_log(remote_command_executor):
-    log_file = "/var/log/slurmdbd.log"
+def _read_slurmdbd_log(remote_command_executor, since_line=0):
+    """Return the slurmdbd log, optionally only the lines appended after the given line number."""
+    return remote_command_executor.run_remote_command(
+        "sudo tail -n +{0} {1}".format(since_line + 1, SLURMDBD_LOG_FILE), hide=True
+    ).stdout
 
-    log = remote_command_executor.run_remote_command("sudo cat {0}".format(log_file), hide=True).stdout
+
+def _get_slurmdbd_log_line_count(remote_command_executor):
+    """Return the current length of the slurmdbd log, to scope later assertions to newly appended lines."""
+    # The file must be passed as an argument rather than redirected in: the shell opens a redirection as the
+    # unprivileged login user, so `sudo wc -l < file` fails on a root-owned 0600 log.
+    result = remote_command_executor.run_remote_command(f"sudo wc -l {SLURMDBD_LOG_FILE}", hide=True)
+    line_count = int(result.stdout.split()[0])
+    logging.info("%s currently has %s lines", SLURMDBD_LOG_FILE, line_count)
+    return line_count
+
+
+@retry(stop_max_attempt_number=36, wait_fixed=10 * 1000)
+def _test_successful_startup_in_log(remote_command_executor, since_line=0):
+    # Scoping to the lines appended after since_line matters after an upgrade: the whole log always contains
+    # the startup line of the version installed at cluster creation, so an unscoped check would pass even if
+    # the upgraded slurmdbd never started.
+    log = _read_slurmdbd_log(remote_command_executor, since_line)
     assert_that(
         [line for line in log.splitlines() if STARTED_PATTERN.fullmatch(line) is not None], "Successful Startup"
     ).is_not_empty()
@@ -148,7 +173,8 @@ def _test_jobs_get_recorded(scheduler_commands):
 
 
 def _assert_job_completion_recorded_in_accounting(job_id, scheduler_commands, clusters=None):
-    results = scheduler_commands.get_accounting_job_records(job_id, clusters=clusters)
+    results = list(scheduler_commands.get_accounting_job_records(job_id, clusters=clusters))
+    assert_that(results).is_not_empty()
     for row in results:
         logging.info(" Result: %s", row)
         assert_that(row.get("state")).is_equal_to("COMPLETED")
@@ -158,7 +184,10 @@ def _test_that_slurmdbd_is_not_running(remote_command_executor):
     assert_that(_is_accounting_enabled(remote_command_executor)).is_false()
 
 
+@retry(stop_max_attempt_number=3, wait_fixed=seconds(10))
 def _test_that_slurmdbd_is_running(remote_command_executor):
+    # Retried because the checks that restart slurmdbd call this straight afterwards. The previous version of this
+    # retry was applied to _is_accounting_enabled, which returns instead of raising, so it never retried.
     assert_that(_is_accounting_enabled(remote_command_executor)).is_true()
 
 
@@ -341,9 +370,7 @@ def _check_cluster_external_dbd(cluster, config_params, region, scheduler_comman
 
     # TODO: _test_slurmdb_users(headnode_remote_command_executor, scheduler_commands, test_resources_dir)
     _test_require_server_identity(slurmdbd_node_remote_command_executor, test_resources_dir, region)
-    retry(stop_max_attempt_number=3, wait_fixed=seconds(10))(_is_accounting_enabled)(
-        headnode_remote_command_executor,
-    )
+    _test_that_slurmdbd_is_running(headnode_remote_command_executor)
     _test_jobs_get_recorded(scheduler_commands)
     assert_no_defunct_slurm_config_params(headnode_remote_command_executor)
 
