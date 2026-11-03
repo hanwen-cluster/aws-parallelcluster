@@ -107,6 +107,7 @@ from tests.common.storage.efs_utils import delete_efs_filesystem
 from tests.common.storage.fsx_utils import delete_fsx_filesystem
 from tests.common.utils import (
     fetch_instance_slots,
+    get_aws_domain,
     get_installed_parallelcluster_version,
     installed_parallelcluster_version_is_at_least,
     retrieve_latest_ami,
@@ -761,7 +762,7 @@ def pcluster_config_reader(test_datadir, vpc_stack, request, region, instance, a
         if not config_file.endswith("image.config.yaml"):
             inject_additional_config_settings(output_file_path, request, region, architecture, ami_type, benchmarks)
         else:
-            inject_additional_image_configs_settings(output_file_path, request)
+            inject_additional_image_configs_settings(output_file_path, request, region)
         return output_file_path
 
     return _config_renderer
@@ -802,7 +803,7 @@ def inject_flexible_instance_types_settings(instance, region, kwargs):
     kwargs["flexible_instance_types"] = flexible_instance_types
 
 
-def inject_additional_image_configs_settings(image_config, request):
+def inject_additional_image_configs_settings(image_config, request, region):
     with open(image_config, encoding="utf-8") as conf_file:
         config_content = yaml.load(conf_file, Loader=yaml.SafeLoader)
 
@@ -815,6 +816,9 @@ def inject_additional_image_configs_settings(image_config, request):
             ("DevSettings", "Cookbook", "ChefCookbook"),
         )
 
+    if dict_has_nested_key(config_content, ("DevSettings", "Cookbook", "ChefCookbook")):
+        inject_pypi_dependencies_base_url(config_content, region)
+
     for option, config_param in [
         ("createami_custom_node_package", "NodePackage"),
     ]:
@@ -823,6 +827,26 @@ def inject_additional_image_configs_settings(image_config, request):
 
     with open(image_config, "w", encoding="utf-8") as conf_file:
         yaml.dump(config_content, conf_file)
+
+
+def inject_pypi_dependencies_base_url(config_content, region):
+    """Make images built with a development cookbook install the PyPI dependencies bundles of the legacy shared path.
+
+    Since 3.16.3 the cookbook installs the bundles published with its release, under
+    parallelcluster/<version>/dependencies/PyPi/, which do not exist before the release. Use the bundles shared by all
+    the versions using the same Python major.minor version instead, unless the test sets pypi_dependencies_base_url.
+    Cookbooks before 3.16.3 ignore the attribute.
+    """
+    extra_chef_attributes = config_content["DevSettings"]["Cookbook"].get("ExtraChefAttributes") or {}
+    if isinstance(extra_chef_attributes, str):
+        extra_chef_attributes = json.loads(extra_chef_attributes)
+    if dict_has_nested_key(extra_chef_attributes, ("cluster", "pypi_dependencies_base_url")):
+        return
+    legacy_base_url = (
+        f"https://{region}-aws-parallelcluster.s3.{region}.{get_aws_domain(region)}/archives/dependencies/PyPi"
+    )
+    merged = _deep_merge_dicts(extra_chef_attributes, {"cluster": {"pypi_dependencies_base_url": legacy_base_url}})
+    dict_add_nested_key(config_content, json.dumps(merged), ("DevSettings", "Cookbook", "ExtraChefAttributes"))
 
 
 def _deep_merge_dicts(base, override):
