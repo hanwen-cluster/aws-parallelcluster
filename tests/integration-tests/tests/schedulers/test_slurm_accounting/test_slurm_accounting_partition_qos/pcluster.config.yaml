@@ -1,0 +1,40 @@
+Image:
+  Os: {{ os }}
+HeadNode:
+  InstanceType: {{ instance }}
+  Networking:
+    SubnetId: {{ public_subnet_id }}
+    AdditionalSecurityGroups:
+      - {{ database_client_security_group }}
+  Iam:
+    AdditionalIamPolicies:
+      - Policy: arn:{{partition}}:iam::aws:policy/AmazonSSMManagedInstanceCore
+  Ssh:
+    KeyName: {{ key_name }}
+  Imds:
+    Secured: {{ imds_secured }}
+Scheduling:
+  Scheduler: {{ scheduler }}
+  SlurmSettings:
+    # DatabaseName is deliberately not set: the default StorageLoc is derived from the cluster name, so every
+    # run starts from an empty accounting database, as when the RDS instance is re-provisioned from scratch.
+    Database:
+      Uri: {{ database_host }}
+      UserName: {{ database_admin_user }}
+      PasswordSecretArn: {{ database_secret_arn }}
+  SlurmQueues:
+    - Name: compute
+      CustomSlurmSettings:
+        QOS: {{ partition_qos }}
+      ComputeResources:
+        - Name: cit
+          Instances:
+            - InstanceType: {{ instance }}
+          MinCount: 0
+          MaxCount: 2
+      Networking:
+        SubnetIds:
+          - {{ private_subnet_id }}
+      Iam:
+        AdditionalIamPolicies:
+          - Policy: arn:{{partition}}:iam::aws:policy/AmazonSSMManagedInstanceCore

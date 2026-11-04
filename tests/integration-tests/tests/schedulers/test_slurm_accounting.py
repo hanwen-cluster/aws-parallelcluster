@@ -391,6 +391,39 @@ def test_slurm_accounting(
     )
 
 
+@pytest.mark.usefixtures("os", "instance", "scheduler")
+def test_slurm_accounting_partition_qos(
+    pcluster_config_reader,
+    vpc_stack_for_database,
+    database,
+    clusters_factory,
+    scheduler_commands_factory,
+):
+    """Create a cluster whose partition references a QOS, against an empty accounting database.
+
+    The QOS cannot exist in the database before the cluster is created: the database is empty until the
+    cluster's own slurmdbd creates the schema. Slurm 25.11 makes slurmctld exit with
+    "fatal: Partition ... has an invalid qos" when a partition QOS is not in the database, so on ParallelCluster
+    3.15.0+ the head node bootstrap fails, whereas Slurm 24.11 (ParallelCluster 3.14) ignored the unknown QOS.
+    """
+    partition = "compute"
+    partition_qos = "pcqos"
+    cluster_config = pcluster_config_reader(
+        public_subnet_id=vpc_stack_for_database.get_public_subnet(),
+        private_subnet_id=vpc_stack_for_database.get_private_subnet(),
+        partition_qos=partition_qos,
+        **_get_slurm_database_config_parameters(database.cfn_outputs),
+    )
+    cluster = clusters_factory(cluster_config)
+
+    remote_command_executor = RemoteCommandExecutor(cluster)
+    scheduler_commands = scheduler_commands_factory(remote_command_executor)
+
+    _test_that_slurmdbd_is_running(remote_command_executor)
+    assert_that(scheduler_commands.get_partition_info(partition, field="QoS")).is_equal_to(partition_qos)
+    _test_jobs_get_recorded(scheduler_commands)
+
+
 def _test_rollback(
     cluster, remote_command_executor, scheduler_commands, test_resources_dir, before, custom_cluster_name
 ):
