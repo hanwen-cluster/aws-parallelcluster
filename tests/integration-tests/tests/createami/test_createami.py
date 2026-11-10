@@ -962,6 +962,8 @@ def test_build_image_efs_utils_workaround(
     pcluster_config_reader,
     images_factory,
     efs_utils_workaround_parent_image,
+    efs_stack_factory,
+    efs_mount_target_stack_factory,
     clusters_factory,
     scheduler_commands_factory,
     test_datadir,
@@ -1021,8 +1023,13 @@ def test_build_image_efs_utils_workaround(
 
     tls_mount_dir = "/efs_tls_iam"
     plain_mount_dir = "/efs_plain"
+    existing_efs_id = efs_stack_factory()[0]
+    efs_mount_target_stack_factory([existing_efs_id])
     cluster_config = pcluster_config_reader(
-        custom_ami=image.ec2_image_id, tls_mount_dir=tls_mount_dir, plain_mount_dir=plain_mount_dir
+        custom_ami=image.ec2_image_id,
+        tls_mount_dir=tls_mount_dir,
+        plain_mount_dir=plain_mount_dir,
+        existing_efs_id=existing_efs_id,
     )
     cluster = clusters_factory(cluster_config)
     remote_command_executor = RemoteCommandExecutor(cluster)

@@ -31,6 +31,9 @@ SharedStorage:
       EncryptionInTransit: true
       IamAuthorization: true
   # Plain NFS mount through the efs mount helper.
+  # Existing file system: ParallelCluster 3.14 supports only one new (managed) EFS.
   - MountDir: {{ plain_mount_dir }}
     Name: efs-plain
     StorageType: Efs
+    EfsSettings:
+      FileSystemId: {{ existing_efs_id }}
