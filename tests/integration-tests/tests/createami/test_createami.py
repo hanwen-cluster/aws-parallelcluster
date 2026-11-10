@@ -22,7 +22,7 @@ from assertpy import assert_that, soft_assertions
 from botocore.exceptions import ClientError
 from cfn_stacks_factory import CfnStack
 from remote_command_executor import RemoteCommandExecutor
-from retrying import retry
+from retrying import RetryError, retry
 from time_utils import minutes, seconds
 from troposphere import Template, iam
 from utils import generate_stack_name, get_arn_partition, get_gpu_count, run_command
@@ -38,6 +38,7 @@ from tests.common.assertions import (
 from tests.common.utils import (
     export_image_logs,
     generate_random_string,
+    get_aws_domain,
     get_installed_parallelcluster_base_version,
     get_installed_parallelcluster_version,
     keep_recent_image_logs,
@@ -47,6 +48,7 @@ from tests.common.utils import (
     wait_for_image_build_status,
 )
 from tests.proxy.test_proxy import proxy_stack_factory  # noqa: F401
+from tests.storage import storage_common
 
 
 class ImageNotFound(Exception):
@@ -667,3 +669,319 @@ def _test_build_image_failed(image, output_dir):
         export_image_logs(image, output_dir)
         keep_recent_image_logs(image)
     assert_that(image.image_status).is_equal_to("BUILD_FAILED")
+
+
+# P558591845: on RHEL/Rocky the 3.14.x/3.15.x cookbooks build efs-utils from source, and the AWS-LC FIPS build runs
+# `go run`. Red Hat golang >= 1.26.10-1 defaults GOFIPS140 to "certified", so every go command needs a module cache,
+# which cannot be found in the Image Builder environment because HOME is not set.
+# The tests below build an intermediate parent image with one of the proposed workarounds and run the full
+# `pcluster build-image` (including the validate/test phase) and a cluster on top of it.
+EFS_UTILS_WORKAROUND_RPM_VERSION = "2.4.2"
+# efs-utils version and source archive used by the ParallelCluster 3.14.2 / 3.15.x cookbook
+PCLUSTER_EFS_UTILS_VERSION = "2.4.0"
+PCLUSTER_EFS_UTILS_TARBALL_SHA256 = "9b60c039c162388091d6fab6e9c6cfc5832f34b26b6d05b0a68b333147d78a25"
+EFS_UTILS_WORKAROUND_RESULT_MARKER = "PCLUSTER_EFS_WORKAROUND_RESULT"
+GO_BUG_REPRODUCED_MARKER = "PCLUSTER_GO_BUG_REPRODUCED"
+
+_EFS_UTILS_WORKAROUND_HEADER = r"""#!/bin/bash
+# Apply a P558591845 workaround, then power off.
+# The result is written to the serial console, where the test reads it with GetConsoleOutput.
+set -euxo pipefail
+report() {
+  echo "@RESULT_MARKER@=$1" > /dev/console
+  sync
+  poweroff
+}
+trap 'report FAILED' ERR
+"""
+
+# Workaround 1: preinstall the prebuilt efs-utils RPM so that the cookbook skips the source build.
+# The cookbook then also skips the source archive download and the poll interval change,
+# both checked by the InSpec tests of the build-image validate phase, so they are done here.
+_EFS_UTILS_RPM_WORKAROUND = r"""
+rpm --import https://amazon-efs-utils.aws.com/efs-utils-armored.gpg
+# Install the RPM directly: a configured efs-utils repo would let UpdateOsPackages upgrade efs-utils to 3.x
+dnf install -y '@EFS_UTILS_RPM_URL@'
+rpm -q amazon-efs-utils | grep '^amazon-efs-utils-@EFS_UTILS_RPM_VERSION@-'
+tarball=/opt/parallelcluster/sources/efs-utils-@PCLUSTER_EFS_UTILS_VERSION@.tar.gz
+mkdir -p /opt/parallelcluster/sources
+curl -fsSL --retry 3 -o "${tarball}" '@EFS_UTILS_TARBALL_URL@'
+echo "@EFS_UTILS_TARBALL_SHA256@  ${tarball}" | sha256sum -c
+chmod 0644 "${tarball}"
+sed -i 's/^poll_interval_sec = 1$/poll_interval_sec = 10/' /etc/amazon/efs/efs-utils.conf
+grep -x 'poll_interval_sec = 10' /etc/amazon/efs/efs-utils.conf
+report SUCCESS
+"""
+
+# Workaround 2: preinstall golang with GOFIPS140=off in GOROOT/go.env (read even without HOME),
+# and lock the golang version because go.env is not a %config file and is replaced on upgrade.
+_GO_FIPS_OFF_WORKAROUND = r"""
+dnf install -y golang python3-dnf-plugin-versionlock
+rpm -q golang
+# Run Go the way aws-lc-fips-sys does inside Image Builder: no HOME, GOPATH or GOMODCACHE, explicit GOCACHE
+mkdir -p /tmp/go-check
+cd /tmp/go-check
+printf 'module check\n\ngo 1.13\n' > go.mod
+printf 'package main\n\nfunc main() { println("ok") }\n' > main.go
+if env -i PATH=/usr/bin:/bin GOCACHE=/tmp/go-check/cache go run .; then
+  echo "@GO_BUG_MARKER@=no" > /dev/console
+else
+  echo "@GO_BUG_MARKER@=yes" > /dev/console
+fi
+echo 'GOFIPS140=off' >> /usr/lib/golang/go.env
+dnf versionlock add golang golang-bin golang-src
+env -i PATH=/usr/bin:/bin GOCACHE=/tmp/go-check/cache go run .
+cd /
+rm -rf /tmp/go-check
+report SUCCESS
+"""
+
+
+def _efs_utils_workaround_user_data(workaround, region, os, architecture):
+    """Return the user data script that applies the given workaround on a RHEL/Rocky instance."""
+    os_major = re.search(r"\d+", os).group()
+    if architecture == "arm64":
+        rpm_dir, rpm_arch = "arm64", "aarch64"
+    else:
+        rpm_dir, rpm_arch = "x86_64", "x86_64"
+    substitutions = {
+        "@RESULT_MARKER@": EFS_UTILS_WORKAROUND_RESULT_MARKER,
+        "@GO_BUG_MARKER@": GO_BUG_REPRODUCED_MARKER,
+        "@EFS_UTILS_RPM_URL@": (
+            f"https://amazon-efs-utils.aws.com/repo/rpm/redhat/{os_major}.%2A/{rpm_dir}/"
+            f"amazon-efs-utils-{EFS_UTILS_WORKAROUND_RPM_VERSION}-1.el{os_major}.{rpm_arch}.rpm"
+        ),
+        "@EFS_UTILS_RPM_VERSION@": EFS_UTILS_WORKAROUND_RPM_VERSION,
+        "@EFS_UTILS_TARBALL_URL@": (
+            f"https://{region}-aws-parallelcluster.s3.{region}.{get_aws_domain(region)}"
+            f"/archives/dependencies/efs/v{PCLUSTER_EFS_UTILS_VERSION}.tar.gz"
+        ),
+        "@EFS_UTILS_TARBALL_SHA256@": PCLUSTER_EFS_UTILS_TARBALL_SHA256,
+        "@PCLUSTER_EFS_UTILS_VERSION@": PCLUSTER_EFS_UTILS_VERSION,
+    }
+    body = {"efs_utils_rpm": _EFS_UTILS_RPM_WORKAROUND, "go_fips_off": _GO_FIPS_OFF_WORKAROUND}[workaround]
+    script = _EFS_UTILS_WORKAROUND_HEADER + body
+    for placeholder, value in substitutions.items():
+        script = script.replace(placeholder, value)
+    return script
+
+
+def _get_console_marker(ec2_client, instance_id, marker):
+    output = ec2_client.get_console_output(InstanceId=instance_id).get("Output", "")
+    values = re.findall(rf"{marker}=(\w+)", output)
+    return values[-1] if values else None
+
+
+@retry(retry_on_result=lambda result: result is None, wait_fixed=seconds(30), stop_max_delay=minutes(10))
+def _wait_for_console_marker(ec2_client, instance_id, marker):
+    # Console output of a stopped instance is published shortly after the state transition
+    return _get_console_marker(ec2_client, instance_id, marker)
+
+
+def _log_console_output(ec2_client, instance_id):
+    output = ec2_client.get_console_output(InstanceId=instance_id).get("Output", "")
+    logging.info("Console output of %s (last 20000 chars):\n%s", instance_id, output[-20000:])
+
+
+@retry(
+    retry_on_result=lambda state: state != "stopped",
+    # The instance may not be visible yet right after RunInstances
+    retry_on_exception=lambda exception: (
+        isinstance(exception, ClientError) and exception.response["Error"]["Code"] == "InvalidInstanceID.NotFound"
+    ),
+    wait_fixed=seconds(15),
+    stop_max_delay=minutes(45),
+)
+def _wait_for_instance_stopped(ec2_client, instance_id):
+    # Not using the InstanceStopped waiter: it fails as soon as it sees the instance in "pending" state
+    instance = ec2_client.describe_instances(InstanceIds=[instance_id])["Reservations"][0]["Instances"][0]
+    state = instance["State"]["Name"]
+    logging.info("Instance %s is %s", instance_id, state)
+    if state in ["shutting-down", "terminated"]:
+        raise RuntimeError(f"Instance {instance_id} is {state}: {instance.get('StateReason')}")
+    return state
+
+
+def _wait_for_workaround_result(ec2_client, instance_id, workaround):
+    """Wait for the instance applying the workaround to power off and assert the user data succeeded."""
+    try:
+        _wait_for_instance_stopped(ec2_client, instance_id)
+    except Exception:
+        _log_console_output(ec2_client, instance_id)
+        raise
+    try:
+        result = _wait_for_console_marker(ec2_client, instance_id, EFS_UTILS_WORKAROUND_RESULT_MARKER)
+    except RetryError:
+        result = None
+    go_bug_reproduced = _get_console_marker(ec2_client, instance_id, GO_BUG_REPRODUCED_MARKER)
+    logging.info(
+        "Workaround %s result on %s: %s (Go failure reproduced before the fix: %s)",
+        workaround,
+        instance_id,
+        result,
+        go_bug_reproduced,
+    )
+    if result != "SUCCESS":
+        _log_console_output(ec2_client, instance_id)
+    assert_that(result).described_as(f"{workaround} user data result").is_equal_to("SUCCESS")
+
+
+def _delete_image_and_snapshots(ec2_client, image_id):
+    images = ec2_client.describe_images(ImageIds=[image_id])["Images"]
+    snapshot_ids = [
+        mapping["Ebs"]["SnapshotId"]
+        for image in images
+        for mapping in image.get("BlockDeviceMappings", [])
+        if "SnapshotId" in mapping.get("Ebs", {})
+    ]
+    logging.info("Deregistering image %s and deleting snapshots %s", image_id, snapshot_ids)
+    ec2_client.deregister_image(ImageId=image_id)
+    for snapshot_id in snapshot_ids:
+        ec2_client.delete_snapshot(SnapshotId=snapshot_id)
+
+
+@pytest.fixture()
+def efs_utils_workaround_parent_image(region, os, architecture, instance, vpc_stack, request):
+    """
+    Build an intermediate parent image with a P558591845 workaround.
+
+    An instance is launched from the base AMI with a user data script that applies the workaround and powers the
+    instance off. The image is created from the stopped instance and deregistered at the end of the test.
+    """
+    ec2_client = boto3.client("ec2", region_name=region)
+    no_delete = request.config.getoption("no_delete")
+    created_image_ids = []
+
+    def _create_parent_image(workaround, base_ami):
+        name = generate_stack_name(
+            f"integ-tests-efs-wa-parent-{workaround.replace('_', '-')}", request.config.getoption("stackname_suffix")
+        )
+        logging.info("Launching instance from %s to build parent image %s", base_ami, name)
+        instance_id = ec2_client.run_instances(
+            ImageId=base_ami,
+            InstanceType=instance,
+            MinCount=1,
+            MaxCount=1,
+            UserData=_efs_utils_workaround_user_data(workaround, region, os, architecture),
+            InstanceInitiatedShutdownBehavior="stop",
+            NetworkInterfaces=[
+                {
+                    "DeviceIndex": 0,
+                    "SubnetId": vpc_stack.get_public_subnet(),
+                    "Groups": [vpc_stack.cfn_outputs["DefaultVpcSecurityGroupId"]],
+                    "AssociatePublicIpAddress": True,
+                }
+            ],
+            MetadataOptions={"HttpTokens": "required", "HttpEndpoint": "enabled"},
+            TagSpecifications=[{"ResourceType": "instance", "Tags": [{"Key": "Name", "Value": name}]}],
+        )["Instances"][0]["InstanceId"]
+        try:
+            _wait_for_workaround_result(ec2_client, instance_id, workaround)
+            image_id = ec2_client.create_image(
+                InstanceId=instance_id,
+                Name=name,
+                Description=f"P558591845 {workaround} workaround on top of {base_ami}",
+            )["ImageId"]
+            created_image_ids.append(image_id)
+            ec2_client.get_waiter("image_available").wait(
+                ImageIds=[image_id], WaiterConfig={"Delay": 15, "MaxAttempts": 240}
+            )
+            logging.info("Parent image %s with workaround %s is available", image_id, workaround)
+            return image_id
+        finally:
+            if no_delete:
+                logging.warning("Not terminating %s because --no-delete option is set", instance_id)
+            else:
+                ec2_client.terminate_instances(InstanceIds=[instance_id])
+
+    yield _create_parent_image
+
+    if no_delete:
+        logging.warning("Skipping deletion of parent images %s because --no-delete option is set", created_image_ids)
+        return
+    for image_id in created_image_ids:
+        _delete_image_and_snapshots(ec2_client, image_id)
+
+
+def _assert_build_log_contains(image, region, text):
+    # Search the whole log group: GetLogEvents pages read backwards can be empty even when events exist
+    log_group_name = f"/aws/imagebuilder/ParallelClusterImage-{image.image_id}"
+    paginator = boto3.client("logs", region_name=region).get_paginator("filter_log_events")
+    pages = paginator.paginate(logGroupName=log_group_name, filterPattern=f'"{text}"')
+    found = any(page["events"] for page in pages)
+    assert_that(found).described_as(f"'{text}' in {log_group_name}").is_true()
+
+
+# Each case takes ~2h, do not rerun on failure
+@pytest.mark.flaky(reruns=0)
+@pytest.mark.parametrize("workaround", ["none", "efs_utils_rpm", "go_fips_off"])
+@pytest.mark.usefixtures("scheduler")
+def test_build_image_efs_utils_workaround(
+    workaround,
+    region,
+    os,
+    instance,
+    architecture,
+    pcluster_config_reader,
+    images_factory,
+    efs_utils_workaround_parent_image,
+    clusters_factory,
+    scheduler_commands_factory,
+    test_datadir,
+    request,
+):
+    """
+    Validate the P558591845 workarounds with a full `pcluster build-image` on RHEL/Rocky with UpdateOsPackages.
+
+    - none: control, the official base AMI is used as is and the build is expected to fail with the Go error.
+    - efs_utils_rpm: parent image with the prebuilt efs-utils RPM, the cookbook skips the efs-utils source build.
+    - go_fips_off: parent image with golang (versionlocked) and GOFIPS140=off, the cookbook builds efs-utils as usual.
+
+    For the workarounds, the build must complete including the validate phase (InSpec tests), and a cluster created
+    from the image must mount EFS (with and without TLS/IAM) on head and compute nodes.
+
+    Only RHEL/Rocky build efs-utils from source, other OSes are skipped.
+    Note: on EL 9.8 the 3.14.2 build fails earlier, in the EFA installer (infiniband-diags-compat no longer exists).
+    """
+    if not re.match(r"^(rhel|rocky)\d+$", os):
+        pytest.skip(f"P558591845 affects only RHEL/Rocky, not {os}")
+    base_ami = retrieve_latest_ami(region, os, ami_type="official", architecture=architecture)
+    parent_image = base_ami if workaround == "none" else efs_utils_workaround_parent_image(workaround, base_ami)
+
+    image_id = generate_stack_name(
+        f"integ-tests-efs-wa-{workaround.replace('_', '-')}", request.config.getoption("stackname_suffix")
+    )
+    image_config = pcluster_config_reader(config_file="image.config.yaml", parent_image=parent_image)
+    image = images_factory(image_id, image_config, region)
+
+    if workaround == "none":
+        _test_build_image_failed(image, request.config.getoption("output_dir"))
+        _assert_build_log_contains(image, region, "module cache not found")
+        return
+
+    wait_for_build_image_complete(image, request.config.getoption("output_dir"))
+
+    tls_mount_dir = "/efs_tls_iam"
+    plain_mount_dir = "/efs_plain"
+    cluster_config = pcluster_config_reader(
+        custom_ami=image.ec2_image_id, tls_mount_dir=tls_mount_dir, plain_mount_dir=plain_mount_dir
+    )
+    cluster = clusters_factory(cluster_config)
+    remote_command_executor = RemoteCommandExecutor(cluster)
+    scheduler_commands = scheduler_commands_factory(remote_command_executor)
+
+    storage_common.test_efs_correctly_mounted(remote_command_executor, tls_mount_dir, tls=True, iam=True)
+    storage_common.test_efs_correctly_mounted(remote_command_executor, plain_mount_dir)
+    for mount_dir in (tls_mount_dir, plain_mount_dir):
+        storage_common.verify_directory_correctly_shared(remote_command_executor, mount_dir, scheduler_commands)
+
+    expected_efs_utils_version = (
+        EFS_UTILS_WORKAROUND_RPM_VERSION if workaround == "efs_utils_rpm" else PCLUSTER_EFS_UTILS_VERSION
+    )
+    check_script = str(test_datadir / "check_efs_utils_workaround.sh")
+    check_args = [workaround, expected_efs_utils_version]
+    remote_command_executor.run_remote_script(check_script, args=check_args)
+    result = scheduler_commands.submit_script(check_script, script_args=check_args)
+    job_id = scheduler_commands.assert_job_submitted(result.stdout)
+    scheduler_commands.wait_job_completed(job_id)
+    scheduler_commands.assert_job_succeeded(job_id)

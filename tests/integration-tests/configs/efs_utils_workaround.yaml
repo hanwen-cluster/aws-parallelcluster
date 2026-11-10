@@ -1,0 +1,12 @@
+{%- import 'common.jinja2' as common with context -%}
+---
+# P558591845: validate the efs-utils / Go GOFIPS140 workarounds for ParallelCluster 3.14.2 build-image on Rocky 8.
+# Runs three cases: none (expected failure), efs_utils_rpm and go_fips_off.
+test-suites:
+  createami:
+    test_createami.py::test_build_image_efs_utils_workaround:
+      dimensions:
+        - regions: ["eu-west-1"]
+          instances: {{ common.INSTANCES_DEFAULT_X86 }}
+          oss: ["rocky8"]
+          schedulers: ["slurm"]

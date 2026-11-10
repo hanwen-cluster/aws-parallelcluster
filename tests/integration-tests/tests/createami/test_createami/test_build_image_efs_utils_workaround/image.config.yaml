@@ -1,0 +1,22 @@
+Image:
+    RootVolume:
+        Size: 200
+        Encrypted: True
+
+Build:
+    InstanceType: {{ instance }}
+    ParentImage: {{ parent_image }}
+    SecurityGroupIds:
+        - {{ default_vpc_security_group_id }}
+    SubnetId: {{ public_subnet_id }}
+    UpdateOsPackages:
+        # Same as the customer configuration (P558591845): update OS packages before installing ParallelCluster.
+        Enabled: true
+    Installation:
+        LustreClient:
+            Enabled: true
+        NvidiaSoftware:
+            Enabled: false
+
+DevSettings:
+    TerminateInstanceOnFailure: True
