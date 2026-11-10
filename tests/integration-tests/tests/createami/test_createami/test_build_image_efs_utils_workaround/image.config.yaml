@@ -14,9 +14,14 @@ Build:
         Enabled: true
     Installation:
         LustreClient:
-            Enabled: true
+            Enabled: {{ enable_lustre_client }}
         NvidiaSoftware:
-            Enabled: false
+            Enabled: {{ enable_nvidia }}
 
 DevSettings:
     TerminateInstanceOnFailure: True
+{% if extra_chef_attributes %}
+    Cookbook:
+        ExtraChefAttributes: |
+            {{ extra_chef_attributes }}
+{% endif %}

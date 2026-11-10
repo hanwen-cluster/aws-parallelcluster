@@ -903,13 +903,50 @@ def efs_utils_workaround_parent_image(region, os, architecture, instance, vpc_st
         _delete_image_and_snapshots(ec2_client, image_id)
 
 
-def _assert_build_log_contains(image, region, text):
+# Upgrades of 3.14.2 dependencies that no longer build on current OS releases, applied through
+# DevSettings.Cookbook.ExtraChefAttributes:
+# - EFA installer 1.44.0 fails on EL 9.8 (infiniband-diags-compat is gone) and its kernel module fails to build
+#   on current Ubuntu kernels. 1.49.0 is the version used by 3.16 (workaround from aws-parallelcluster#7406).
+# - NVIDIA driver 570.172.08 kernel modules fail to build on current EL9, AL2023 and Ubuntu 24.04 kernels.
+#   580.126.20 is the driver of 3.15.1, available in the ParallelCluster artifacts bucket.
+#   Fabric Manager and IMEX versions follow the driver version.
+EFA_UPGRADE = {"version": "1.49.0", "sha256": "cf2e9281a2328a243c76f911a490faed43ca0fecfe4733c25e34b2e92a32c309"}
+NVIDIA_DRIVER_UPGRADE = "580.126.20"
+# OSes where the 3.14.2 EFA installer and NVIDIA driver still work, so no upgrade is applied
+OSES_WITHOUT_DEPENDENCY_UPGRADE = ["alinux2", "rhel8", "rocky8"]
+# Same Lustre client exclusions as test_build_image: these OSes release new kernels more often than Lustre supports
+OSES_WITHOUT_LUSTRE = ["ubuntu2204", "ubuntu2404", "rhel9", "rocky9"]
+# Known 3.14.2 build failures, used to classify the build failures of the "none" case
+KNOWN_BUILD_FAILURES = {
+    "go_module_cache": "module cache not found",
+    "efa_installer": "failed to install EFA packages",
+    "nvidia_driver": "nvidia.run advanced",
+}
+
+
+def _is_el(os):
+    return re.match(r"^(rhel|rocky)\d+$", os) is not None
+
+
+def _build_log_contains(image, region, text):
     # Search the whole log group: GetLogEvents pages read backwards can be empty even when events exist
     log_group_name = f"/aws/imagebuilder/ParallelClusterImage-{image.image_id}"
     paginator = boto3.client("logs", region_name=region).get_paginator("filter_log_events")
     pages = paginator.paginate(logGroupName=log_group_name, filterPattern=f'"{text}"')
-    found = any(page["events"] for page in pages)
-    assert_that(found).described_as(f"'{text}' in {log_group_name}").is_true()
+    return any(page["events"] for page in pages)
+
+
+def _test_baseline_build(image, region, os, output_dir):
+    """Baseline without workarounds: the build must either complete or fail with a known 3.14.2 failure."""
+    wait_for_image_build_status(image, ["BUILD_COMPLETE", "BUILD_FAILED"])
+    export_image_logs(image, output_dir)
+    if image.image_status == "BUILD_COMPLETE":
+        logging.info("Baseline build of %s completed without workarounds", os)
+        return
+    keep_recent_image_logs(image)
+    known_failures = [name for name, text in KNOWN_BUILD_FAILURES.items() if _build_log_contains(image, region, text)]
+    logging.info("Baseline build of %s failed with known failures: %s", os, known_failures)
+    assert_that(known_failures).described_as(f"known 3.14.2 build failures on {os}").is_not_empty()
 
 
 # Each case takes ~2h, do not rerun on failure
@@ -931,32 +968,53 @@ def test_build_image_efs_utils_workaround(
     request,
 ):
     """
-    Validate the P558591845 workarounds with a full `pcluster build-image` on RHEL/Rocky with UpdateOsPackages.
+    Validate the workarounds for 3.14.2 `pcluster build-image` failures (P558591845) with UpdateOsPackages enabled.
 
-    - none: control, the official base AMI is used as is and the build is expected to fail with the Go error.
-    - efs_utils_rpm: parent image with the prebuilt efs-utils RPM, the cookbook skips the efs-utils source build.
-    - go_fips_off: parent image with golang (versionlocked) and GOFIPS140=off, the cookbook builds efs-utils as usual.
+    - none: baseline, the official base AMI is used as is. The build must complete or fail with a known failure
+      (Go module cache on EL, EFA installer on EL 9.8 and Ubuntu, NVIDIA kernel module on new kernels).
+    - efs_utils_rpm (RHEL/Rocky): parent image with the prebuilt efs-utils RPM, the cookbook skips the source build.
+    - go_fips_off (RHEL/Rocky): parent image with golang (versionlocked) and GOFIPS140=off.
+    On all OSes but alinux2 and EL8, the workaround cases also upgrade EFA and the NVIDIA driver with
+    ExtraChefAttributes. On OSes other than RHEL/Rocky, efs-utils needs no workaround: efs_utils_rpm only applies
+    the upgrades and go_fips_off would be a duplicate of it, so it is skipped.
 
     For the workarounds, the build must complete including the validate phase (InSpec tests), and a cluster created
-    from the image must mount EFS (with and without TLS/IAM) on head and compute nodes.
-
-    Only RHEL/Rocky build efs-utils from source, other OSes are skipped.
-    Note: on EL 9.8 the 3.14.2 build fails earlier, in the EFA installer (infiniband-diags-compat no longer exists).
+    from the image must mount EFS (with and without TLS/IAM) on head and compute nodes, with the expected
+    efs-utils, NVIDIA driver and EFA installer versions.
     """
-    if not re.match(r"^(rhel|rocky)\d+$", os):
-        pytest.skip(f"P558591845 affects only RHEL/Rocky, not {os}")
+    is_el = _is_el(os)
+    if not is_el and workaround == "go_fips_off":
+        pytest.skip(f"No efs-utils workaround needed on {os}: same as the efs_utils_rpm case (upgrades only)")
+    enable_nvidia = get_gpu_count(instance) > 0
+    upgrade_dependencies = workaround != "none" and os not in OSES_WITHOUT_DEPENDENCY_UPGRADE
+
     base_ami = retrieve_latest_ami(region, os, ami_type="official", architecture=architecture)
-    parent_image = base_ami if workaround == "none" else efs_utils_workaround_parent_image(workaround, base_ami)
+    if workaround != "none" and is_el:
+        parent_image = efs_utils_workaround_parent_image(workaround, base_ami)
+    else:
+        parent_image = base_ami
+
+    extra_chef_attributes = ""
+    if upgrade_dependencies:
+        cluster_attributes = {"efa": EFA_UPGRADE}
+        if enable_nvidia:
+            cluster_attributes["nvidia"] = {"driver_version": NVIDIA_DRIVER_UPGRADE}
+        extra_chef_attributes = json.dumps({"cluster": cluster_attributes})
 
     image_id = generate_stack_name(
         f"integ-tests-efs-wa-{workaround.replace('_', '-')}", request.config.getoption("stackname_suffix")
     )
-    image_config = pcluster_config_reader(config_file="image.config.yaml", parent_image=parent_image)
+    image_config = pcluster_config_reader(
+        config_file="image.config.yaml",
+        parent_image=parent_image,
+        enable_nvidia=str(enable_nvidia).lower(),
+        enable_lustre_client=str(os not in OSES_WITHOUT_LUSTRE).lower(),
+        extra_chef_attributes=extra_chef_attributes,
+    )
     image = images_factory(image_id, image_config, region)
 
     if workaround == "none":
-        _test_build_image_failed(image, request.config.getoption("output_dir"))
-        _assert_build_log_contains(image, region, "module cache not found")
+        _test_baseline_build(image, region, os, request.config.getoption("output_dir"))
         return
 
     wait_for_build_image_complete(image, request.config.getoption("output_dir"))
@@ -975,11 +1033,19 @@ def test_build_image_efs_utils_workaround(
     for mount_dir in (tls_mount_dir, plain_mount_dir):
         storage_common.verify_directory_correctly_shared(remote_command_executor, mount_dir, scheduler_commands)
 
-    expected_efs_utils_version = (
-        EFS_UTILS_WORKAROUND_RPM_VERSION if workaround == "efs_utils_rpm" else PCLUSTER_EFS_UTILS_VERSION
-    )
+    if workaround == "efs_utils_rpm" and is_el:
+        expected_efs_utils_version = EFS_UTILS_WORKAROUND_RPM_VERSION
+    elif is_el or os.startswith("ubuntu"):
+        expected_efs_utils_version = PCLUSTER_EFS_UTILS_VERSION  # built from source by the cookbook
+    else:
+        expected_efs_utils_version = "any"  # installed from the Amazon Linux repositories
+    check_args = [
+        workaround if is_el else "none",
+        expected_efs_utils_version,
+        (NVIDIA_DRIVER_UPGRADE if upgrade_dependencies else "any") if enable_nvidia else "none",
+        EFA_UPGRADE["version"] if upgrade_dependencies else "any",
+    ]
     check_script = str(test_datadir / "check_efs_utils_workaround.sh")
-    check_args = [workaround, expected_efs_utils_version]
     remote_command_executor.run_remote_script(check_script, args=check_args)
     result = scheduler_commands.submit_script(check_script, script_args=check_args)
     job_id = scheduler_commands.assert_job_submitted(result.stdout)
