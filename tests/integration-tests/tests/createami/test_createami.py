@@ -1000,7 +1000,9 @@ def test_build_image_efs_utils_workaround(
     if upgrade_dependencies:
         cluster_attributes = {"efa": EFA_UPGRADE}
         if enable_nvidia:
-            cluster_attributes["nvidia"] = {"driver_version": NVIDIA_DRIVER_UPGRADE}
+            # "enabled" is required: a "nvidia" key in ExtraChefAttributes replaces the {"enabled": "yes"}
+            # that build-image derives from Build.Installation.NvidiaSoftware, so NVIDIA would not be installed.
+            cluster_attributes["nvidia"] = {"enabled": "yes", "driver_version": NVIDIA_DRIVER_UPGRADE}
         extra_chef_attributes = json.dumps({"cluster": cluster_attributes})
 
     image_id = generate_stack_name(
